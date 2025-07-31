@@ -85,13 +85,15 @@ namespace ExcelDataManagementAPI.Services
 
                 // Header'larý al
                 var headers = new List<string>();
-                for (int col = 1; col <= worksheet.Dimension?.Columns ?? 0; col++)
+                var columnCount = worksheet.Dimension?.Columns ?? 0;
+                for (int col = 1; col <= columnCount; col++)
                 {
                     headers.Add(worksheet.Cells[1, col].Value?.ToString() ?? $"Column{col}");
                 }
 
                 // Verileri oku ve veritabanýna kaydet
-                for (int row = 2; row <= worksheet.Dimension?.Rows ?? 0; row++)
+                var rowCount = worksheet.Dimension?.Rows ?? 0;
+                for (int row = 2; row <= rowCount; row++)
                 {
                     var rowData = new Dictionary<string, object>();
                     for (int col = 1; col <= headers.Count; col++)

@@ -28,6 +28,23 @@ builder.Services.AddScoped<IDataComparisonService, DataComparisonService>();
 
 builder.Services.AddCors(options =>
 {
+    options.AddPolicy("FrontendPolicy", policy =>
+    {
+        policy.WithOrigins(
+                "http://localhost:3000", 
+                "http://localhost:4200", 
+                "http://localhost:5173",  
+                "http://localhost:8080",  
+                "http://127.0.0.1:3000",
+                "http://127.0.0.1:4200",
+                "http://127.0.0.1:5173",
+                "http://127.0.0.1:8080"
+              )
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+
     options.AddPolicy("AllowAll", policy =>
     {
         policy.AllowAnyOrigin()
@@ -57,12 +74,13 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "";
 });
 
-app.UseCors("AllowAll");
+app.UseCors("FrontendPolicy");
 app.UseAuthorization();
 app.MapControllers();
 
 Console.WriteLine("🚀 API başlatıldı!");
 Console.WriteLine("📖 Swagger UI: http://localhost:5002");
 Console.WriteLine("🌐 API: http://localhost:5002/api");
+Console.WriteLine("🔗 Frontend CORS: 3000, 4200, 5173, 8080 portları destekleniyor");
 
 app.Run();
