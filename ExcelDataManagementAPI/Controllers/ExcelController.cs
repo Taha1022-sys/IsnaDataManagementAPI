@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using ExcelDataManagementAPI.Data;
 using ExcelDataManagementAPI.Services;
 using ExcelDataManagementAPI.Models.DTOs;
 
@@ -9,11 +11,13 @@ namespace ExcelDataManagementAPI.Controllers
     public class ExcelController : ControllerBase
     {
         private readonly IExcelService _excelService;
+        private readonly ExcelDataContext _context;
         private readonly ILogger<ExcelController> _logger;
 
-        public ExcelController(IExcelService excelService, ILogger<ExcelController> logger)
+        public ExcelController(IExcelService excelService, ExcelDataContext context, ILogger<ExcelController> logger)
         {
             _excelService = excelService;
+            _context = context;
             _logger = logger;
         }
 
@@ -30,11 +34,84 @@ namespace ExcelDataManagementAPI.Controllers
                 {
                     "Excel dosyasý yükleme: POST /api/excel/upload",
                     "Dosya listesi: GET /api/excel/files", 
+                    "Dosya silme: DELETE /api/excel/files/{fileName}",
                     "Manuel dosya seçip okuma: POST /api/excel/read-from-file",
                     "Manuel dosya seçip güncelleme: POST /api/excel/update-from-file",
-                    "Veri düzenleme: PUT /api/excel/data"
+                    "Veri düzenleme: PUT /api/excel/data",
+                    "Tüm verileri getirme: GET /api/excel/data/{fileName}/all",
+                    "Sayfalý veri getirme: GET /api/excel/data/{fileName}?page=1&pageSize=50"
+                },
+                debugEndpoints = new[]
+                {
+                    "Veritabaný durumu: GET /api/excel/debug/database-status",
+                    "Dosya durumu: GET /api/excel/files/{fileName}/status",
+                    "Veri sorgusu test: GET /api/excel/debug/test-data-query/{fileName}",
+                    "Veri akýþ testi: GET /api/excel/debug/data-flow-test/{fileName}"
                 }
             });
+        }
+
+        /// <summary>
+        /// Debug endpoint - Veritabaný durumunu kontrol etme
+        /// </summary>
+        [HttpGet("debug/database-status")]
+        public async Task<IActionResult> GetDatabaseStatus()
+        {
+            try
+            {
+                var filesCount = await _excelService.GetExcelFilesAsync();
+                var totalDataRows = await _context.ExcelDataRows.CountAsync();
+                var activeDataRows = await _context.ExcelDataRows.Where(r => !r.IsDeleted).CountAsync();
+                var deletedDataRows = await _context.ExcelDataRows.Where(r => r.IsDeleted).CountAsync();
+
+                // Her dosya için detaylý bilgi
+                var fileDetails = new List<object>();
+                foreach (var file in filesCount)
+                {
+                    var fileDataCount = await _context.ExcelDataRows
+                        .Where(r => r.FileName == file.FileName && !r.IsDeleted)
+                        .CountAsync();
+
+                    var sheets = await _context.ExcelDataRows
+                        .Where(r => r.FileName == file.FileName && !r.IsDeleted)
+                        .Select(r => r.SheetName)
+                        .Distinct()
+                        .ToListAsync();
+
+                    fileDetails.Add(new
+                    {
+                        file.FileName,
+                        file.OriginalFileName,
+                        file.IsActive,
+                        file.UploadDate,
+                        file.FileSize,
+                        DataRowCount = fileDataCount,
+                        AvailableSheets = sheets,
+                        PhysicalFileExists = !string.IsNullOrEmpty(file.FilePath) && System.IO.File.Exists(file.FilePath),
+                        FilePath = file.FilePath
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    databaseStatus = new
+                    {
+                        totalFiles = filesCount.Count,
+                        activeFiles = filesCount.Where(f => f.IsActive).Count(),
+                        totalDataRows = totalDataRows,
+                        activeDataRows = activeDataRows,
+                        deletedDataRows = deletedDataRows,
+                        files = fileDetails
+                    },
+                    message = "Veritabaný durumu baþarýyla alýndý"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Veritabaný durumu kontrol edilirken hata");
+                return StatusCode(500, new { success = false, message = ex.Message });
+            }
         }
 
         /// <summary>
@@ -221,6 +298,9 @@ namespace ExcelDataManagementAPI.Controllers
         {
             try
             {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+                
                 var data = await _excelService.ReadExcelDataAsync(fileName, sheetName);
                 return Ok(new { 
                     success = true, 
@@ -246,8 +326,93 @@ namespace ExcelDataManagementAPI.Controllers
         {
             try
             {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+                
+                _logger.LogInformation("Veri getirilmeye çalýþýlýyor: FileName={FileName}, SheetName={SheetName}, Page={Page}", fileName, sheetName, page);
+
+                // Önce dosyanýn var olup olmadýðýný kontrol et
+                var fileExists = await _context.ExcelFiles
+                    .AnyAsync(f => f.FileName == fileName && f.IsActive);
+
+                if (!fileExists)
+                {
+                    _logger.LogWarning("Dosya bulunamadý: {FileName}", fileName);
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Belirtilen dosya bulunamadý. Dosyanýn yüklendiðinden ve aktif olduðundan emin olun.",
+                        fileName = fileName,
+                        availableFiles = await _context.ExcelFiles
+                            .Where(f => f.IsActive)
+                            .Select(f => f.FileName)
+                            .ToListAsync()
+                    });
+                }
+
+                // Verileri getir
                 var data = await _excelService.GetExcelDataAsync(fileName, sheetName, page, pageSize);
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
+
+                // Eðer veri yoksa ancak dosya varsa, dosyanýn okunup okunmadýðýný kontrol et
+                if (data.Count == 0)
+                {
+                    var totalDataCount = await _context.ExcelDataRows
+                        .Where(r => r.FileName == fileName && !r.IsDeleted)
+                        .CountAsync();
+
+                    if (totalDataCount == 0)
+                    {
+                        // Dosya var ama veri yok - okunmamýþ olabilir
+                        var availableSheets = await _excelService.GetSheetsAsync(fileName);
+                        
+                        _logger.LogWarning("Dosya bulundu ancak veri yok: {FileName}", fileName);
+                        return Ok(new
+                        {
+                            success = true,
+                            data = new List<object>(),
+                            fileName = fileName,
+                            sheetName = sheetName,
+                            page = page,
+                            pageSize = pageSize,
+                            statistics = statistics,
+                            hasData = false,
+                            availableSheets = availableSheets,
+                            message = "Dosya bulundu ancak henüz okunmamýþ. Önce dosyayý okuyun.",
+                            suggestedActions = new
+                            {
+                                readFile = $"/api/excel/read/{fileName}",
+                                readWithSheet = availableSheets.Any() ? $"/api/excel/read/{fileName}?sheetName={availableSheets.First()}" : null
+                            }
+                        });
+                    }
+                    
+                    // Sheet belirtilmiþse ve o sheet'te veri yoksa
+                    if (!string.IsNullOrEmpty(sheetName))
+                    {
+                        var sheetExists = await _context.ExcelDataRows
+                            .AnyAsync(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted);
+
+                        if (!sheetExists)
+                        {
+                            var availableSheets = await _context.ExcelDataRows
+                                .Where(r => r.FileName == fileName && !r.IsDeleted)
+                                .Select(r => r.SheetName)
+                                .Distinct()
+                                .ToListAsync();
+
+                            return NotFound(new
+                            {
+                                success = false,
+                                message = $"Belirtilen sayfa '{sheetName}' bulunamadý.",
+                                fileName = fileName,
+                                requestedSheet = sheetName,
+                                availableSheets = availableSheets,
+                                suggestion = availableSheets.Any() ? $"Mevcut sayfalardan birini seçin: {string.Join(", ", availableSheets)}" : "Bu dosyada henüz veri bulunmuyor."
+                            });
+                        }
+                    }
+                }
                 
                 return Ok(new { 
                     success = true, 
@@ -257,13 +422,130 @@ namespace ExcelDataManagementAPI.Controllers
                     page = page, 
                     pageSize = pageSize,
                     statistics = statistics,
-                    message = $"Sayfa {page} - {data.Count} kayýt gösteriliyor"
+                    hasData = data.Count > 0,
+                    message = data.Count > 0 ? $"Sayfa {page} - {data.Count} kayýt gösteriliyor" : "Bu sayfada gösterilecek veri bulunamadý"
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Excel verileri getirilirken hata: {FileName}", fileName);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                _logger.LogError(ex, "Excel verileri getirilirken hata: {FileName}, Sheet: {SheetName}", fileName, sheetName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Veriler getirilirken bir hata oluþtu: " + ex.Message,
+                    fileName = fileName,
+                    sheetName = sheetName
+                });
+            }
+        }
+
+        /// <summary>
+        /// Dosyadan tüm verileri getirme (sayfalama olmadan)
+        /// </summary>
+        [HttpGet("data/{fileName}/all")]
+        public async Task<IActionResult> GetAllExcelData(string fileName, [FromQuery] string? sheetName = null)
+        {
+            try
+            {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+                
+                _logger.LogInformation("Tüm veriler getirilmeye çalýþýlýyor: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
+
+                // Önce dosyanýn var olup olmadýðýný kontrol et
+                var fileExists = await _context.ExcelFiles
+                    .AnyAsync(f => f.FileName == fileName && f.IsActive);
+
+                if (!fileExists)
+                {
+                    _logger.LogWarning("Dosya bulunamadý: {FileName}", fileName);
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Belirtilen dosya bulunamadý. Dosyanýn yüklendiðinden ve aktif olduðundan emin olun.",
+                        fileName = fileName,
+                        availableFiles = await _context.ExcelFiles
+                            .Where(f => f.IsActive)
+                            .Select(f => f.FileName)
+                            .ToListAsync()
+                    });
+                }
+
+                var data = await _excelService.GetAllExcelDataAsync(fileName, sheetName);
+                var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
+
+                // Eðer veri yoksa detaylý bilgi ver
+                if (data.Count == 0)
+                {
+                    var totalDataCount = await _context.ExcelDataRows
+                        .Where(r => r.FileName == fileName && !r.IsDeleted)
+                        .CountAsync();
+
+                    if (totalDataCount == 0)
+                    {
+                        // Dosya var ama veri yok - okunmamýþ olabilir
+                        var availableSheets = await _excelService.GetSheetsAsync(fileName);
+                        
+                        _logger.LogWarning("Dosya bulundu ancak veri yok: {FileName}", fileName);
+                        return Ok(new
+                        {
+                            success = true,
+                            data = new List<object>(),
+                            fileName = fileName,
+                            sheetName = sheetName,
+                            totalRows = 0,
+                            statistics = statistics,
+                            hasData = false,
+                            availableSheets = availableSheets,
+                            message = "Dosya bulundu ancak henüz okunmamýþ. Önce dosyayý okuyun.",
+                            suggestedActions = new
+                            {
+                                readFile = $"/api/excel/read/{fileName}",
+                                readWithSheet = availableSheets.Any() ? $"/api/excel/read/{fileName}?sheetName={availableSheets.First()}" : null
+                            }
+                        });
+                    }
+                    
+                    // Sheet belirtilmiþse ve o sheet'te veri yoksa
+                    if (!string.IsNullOrEmpty(sheetName))
+                    {
+                        var availableSheets = await _context.ExcelDataRows
+                            .Where(r => r.FileName == fileName && !r.IsDeleted)
+                            .Select(r => r.SheetName)
+                            .Distinct()
+                            .ToListAsync();
+
+                        return NotFound(new
+                        {
+                            success = false,
+                            message = $"Belirtilen sayfa '{sheetName}' bulunamadý.",
+                            fileName = fileName,
+                            requestedSheet = sheetName,
+                            availableSheets = availableSheets,
+                            suggestion = availableSheets.Any() ? $"Mevcut sayfalardan birini seçin: {string.Join(", ", availableSheets)}" : "Bu dosyada henüz veri bulunmuyor."
+                        });
+                    }
+                }
+                
+                return Ok(new { 
+                    success = true, 
+                    data = data, 
+                    fileName = fileName,
+                    sheetName = sheetName,
+                    totalRows = data.Count,
+                    statistics = statistics,
+                    hasData = data.Count > 0,
+                    message = data.Count > 0 ? $"Toplam {data.Count} kayýt getirildi" : "Bu dosya/sayfa için veri bulunamadý"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Excel verileri getirilirken hata: {FileName}, Sheet: {SheetName}", fileName, sheetName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Veriler getirilirken bir hata oluþtu: " + ex.Message,
+                    fileName = fileName,
+                    sheetName = sheetName
+                });
             }
         }
 
@@ -367,6 +649,9 @@ namespace ExcelDataManagementAPI.Controllers
         {
             try
             {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+                
                 var sheets = await _excelService.GetSheetsAsync(fileName);
                 return Ok(new { 
                     success = true, 
@@ -390,6 +675,9 @@ namespace ExcelDataManagementAPI.Controllers
         {
             try
             {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+                
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
                 return Ok(new { success = true, data = statistics });
             }
@@ -398,6 +686,449 @@ namespace ExcelDataManagementAPI.Controllers
                 _logger.LogError(ex, "Ýstatistikler getirilirken hata: {FileName}", fileName);
                 return StatusCode(500, new { success = false, message = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Excel dosyasý silme
+        /// </summary>
+        [HttpDelete("files/{fileName}")]
+        public async Task<IActionResult> DeleteFile(string fileName, [FromQuery] string? deletedBy = null)
+        {
+            try
+            {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+                
+                var result = await _excelService.DeleteExcelFileAsync(fileName, deletedBy);
+                if (result)
+                {
+                    return Ok(new { 
+                        success = true, 
+                        message = "Dosya baþarýyla silindi",
+                        fileName = fileName
+                    });
+                }
+                else
+                {
+                    return NotFound(new { 
+                        success = false, 
+                        message = "Dosya bulunamadý",
+                        fileName = fileName
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Dosya silinirken hata: {FileName}", fileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message,
+                    fileName = fileName
+                });
+            }
+        }
+
+        /// <summary>
+        /// Debug endpoint - Dosya durumunu kontrol etme
+        /// </summary>
+        [HttpGet("files/{fileName}/status")]
+        public async Task<IActionResult> GetFileStatus(string fileName)
+        {
+            try
+            {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+
+                var file = await _context.ExcelFiles
+                    .FirstOrDefaultAsync(f => f.FileName == fileName);
+
+                if (file == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Dosya bulunamadý",
+                        fileName = fileName,
+                        availableFiles = await _context.ExcelFiles
+                            .Where(f => f.IsActive)
+                            .Select(f => new { f.FileName, f.OriginalFileName })
+                            .ToListAsync()
+                    });
+                }
+
+                var dataRowsCount = await _context.ExcelDataRows
+                    .Where(r => r.FileName == fileName && !r.IsDeleted)
+                    .CountAsync();
+
+                var sheets = await _context.ExcelDataRows
+                    .Where(r => r.FileName == fileName && !r.IsDeleted)
+                    .Select(r => r.SheetName)
+                    .Distinct()
+                    .ToListAsync();
+
+                // Physical file kontrolü
+                bool physicalFileExists = !string.IsNullOrEmpty(file.FilePath) && System.IO.File.Exists(file.FilePath);
+
+                // Eðer dosya Excel formatýndaysa sheet'leri de al
+                List<string> availableSheets = new List<string>();
+                if (physicalFileExists)
+                {
+                    try
+                    {
+                        availableSheets = await _excelService.GetSheetsAsync(fileName);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Dosya sheet'leri alýnýrken hata: {FileName}", fileName);
+                    }
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    fileStatus = new
+                    {
+                        fileName = file.FileName,
+                        originalFileName = file.OriginalFileName,
+                        isActive = file.IsActive,
+                        uploadDate = file.UploadDate,
+                        fileSize = file.FileSize,
+                        hasData = dataRowsCount > 0,
+                        totalDataRows = dataRowsCount,
+                        availableSheets = sheets,
+                        physicalFileExists = physicalFileExists,
+                        filePath = file.FilePath,
+                        sheetsInFile = availableSheets,
+                        needsReading = dataRowsCount == 0 && physicalFileExists
+                    },
+                    message = "Dosya durumu baþarýyla alýndý",
+                    recommendations = GetFileRecommendations(file.IsActive, physicalFileExists, dataRowsCount > 0, availableSheets.Any())
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Dosya durumu kontrol edilirken hata: {FileName}", fileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Dosya durumu kontrol edilirken hata oluþtu: " + ex.Message,
+                    fileName = fileName
+                });
+            }
+        }
+
+        private object GetFileRecommendations(bool isActive, bool physicalExists, bool hasData, bool hasSheets)
+        {
+            var recommendations = new List<string>();
+
+            if (!isActive)
+                recommendations.Add("Dosya aktif deðil. Dosyayý yeniden yükleyin.");
+            else if (!physicalExists)
+                recommendations.Add("Fiziksel dosya bulunamadý. Dosyayý yeniden yükleyin.");
+            else if (!hasData)
+                recommendations.Add("Dosya var ancak veri yok. Dosyayý okuyun.");
+            else if (!hasSheets)
+                recommendations.Add("Veritabanýnda sheet bilgisi yok. Dosyayý yeniden okuyun.");
+            else
+                recommendations.Add("Dosya durumu normal.");
+
+            return recommendations;
+        }
+
+        /// <summary>
+        /// Debug endpoint - Deneme amaçlý
+        /// </summary>
+        [HttpGet("debug/test")]
+        public IActionResult DebugTest()
+        {
+            return Ok(new { success = true, message = "Debug test baþarýlý" });
+        }
+
+        /// <summary>
+        /// Debug endpoint - Belirli dosya için veri sorgusu test etme
+        /// </summary>
+        [HttpGet("debug/test-data-query/{fileName}")]
+        public async Task<IActionResult> TestDataQuery(string fileName, [FromQuery] string? sheetName = null)
+        {
+            try
+            {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+
+                _logger.LogInformation("Test data query baþlatýldý: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
+
+                // 1. Dosya kontrolü
+                var file = await _context.ExcelFiles
+                    .FirstOrDefaultAsync(f => f.FileName == fileName);
+
+                var fileInfo = new
+                {
+                    exists = file != null,
+                    isActive = file?.IsActive ?? false,
+                    fileName = file?.FileName,
+                    originalFileName = file?.OriginalFileName,
+                    uploadDate = file?.UploadDate,
+                    physicalFileExists = file != null && !string.IsNullOrEmpty(file.FilePath) && System.IO.File.Exists(file.FilePath)
+                };
+
+                // 2. Veri kontrolü
+                var baseQuery = _context.ExcelDataRows
+                    .Where(r => r.FileName == fileName);
+
+                var allDataCount = await baseQuery.CountAsync();
+                var activeDataCount = await baseQuery.Where(r => !r.IsDeleted).CountAsync();
+                var deletedDataCount = await baseQuery.Where(r => r.IsDeleted).CountAsync();
+
+                var dataInfo = new
+                {
+                    totalDataRows = allDataCount,
+                    activeDataRows = activeDataCount,
+                    deletedDataRows = deletedDataCount
+                };
+
+                // 3. Sheet kontrolü
+                var allSheets = await baseQuery
+                    .Where(r => !r.IsDeleted)
+                    .Select(r => r.SheetName)
+                    .Distinct()
+                    .ToListAsync();
+
+                var sheetInfo = new
+                {
+                    requestedSheet = sheetName,
+                    availableSheets = allSheets,
+                    requestedSheetExists = !string.IsNullOrEmpty(sheetName) && allSheets.Contains(sheetName),
+                    sheetDataCount = !string.IsNullOrEmpty(sheetName) 
+                        ? await baseQuery.Where(r => r.SheetName == sheetName && !r.IsDeleted).CountAsync()
+                        : 0
+                };
+
+                // 4. Sample data
+                var sampleData = await baseQuery
+                    .Where(r => !r.IsDeleted)
+                    .Take(3)
+                    .Select(r => new
+                    {
+                        r.Id,
+                        r.FileName,
+                        r.SheetName,
+                        r.RowIndex,
+                        r.CreatedDate,
+                        r.IsDeleted,
+                        DataPreview = r.RowData.Substring(0, Math.Min(r.RowData.Length, 100)) + (r.RowData.Length > 100 ? "..." : "")
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    testResults = new
+                    {
+                        queryParameters = new { fileName, sheetName },
+                        fileInfo,
+                        dataInfo,
+                        sheetInfo,
+                        sampleData,
+                        diagnosis = GetDiagnosis(fileInfo, dataInfo, sheetInfo)
+                    },
+                    message = "Test sorgusu tamamlandý"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Test data query'de hata: {FileName}", fileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message,
+                    fileName = fileName,
+                    sheetName = sheetName
+                });
+            }
+        }
+
+        /// <summary>
+        /// Debug endpoint - Veri akýþýný test etme
+        /// </summary>
+        [HttpGet("debug/data-flow-test/{fileName}")]
+        public async Task<IActionResult> TestDataFlow(string fileName, [FromQuery] string? sheetName = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+        {
+            try
+            {
+                // URL decode iþlemi
+                fileName = Uri.UnescapeDataString(fileName);
+
+                var steps = new List<object>();
+
+                // Adým 1: Dosya kontrolü
+                var fileCheck = await _context.ExcelFiles
+                    .FirstOrDefaultAsync(f => f.FileName == fileName && f.IsActive);
+
+                steps.Add(new
+                {
+                    step = 1,
+                    description = "Dosya kontrolü",
+                    success = fileCheck != null,
+                    result = fileCheck != null ? new { fileCheck.FileName, fileCheck.OriginalFileName, fileCheck.IsActive } : null
+                });
+
+                if (fileCheck == null)
+                {
+                    return Ok(new { success = false, steps, message = "Dosya bulunamadý" });
+                }
+
+                // Adým 2: Veri sayýsý kontrolü
+                var dataCount = await _context.ExcelDataRows
+                    .Where(r => r.FileName == fileName && !r.IsDeleted)
+                    .CountAsync();
+
+                steps.Add(new
+                {
+                    step = 2,
+                    description = "Aktif veri sayýsý kontrolü",
+                    success = dataCount > 0,
+                    result = new { dataCount }
+                });
+
+                // Adým 3: Sheet kontrolü (eðer belirtildiyse)
+                if (!string.IsNullOrEmpty(sheetName))
+                {
+                    var sheetDataCount = await _context.ExcelDataRows
+                        .Where(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted)
+                        .CountAsync();
+
+                    steps.Add(new
+                    {
+                        step = 3,
+                        description = $"Sheet '{sheetName}' veri kontrolü",
+                        success = sheetDataCount > 0,
+                        result = new { sheetName, sheetDataCount }
+                    });
+                }
+
+                // Adým 4: Service metodunu test et
+                try
+                {
+                    var serviceResult = await _excelService.GetExcelDataAsync(fileName, sheetName, page, pageSize);
+                    steps.Add(new
+                    {
+                        step = 4,
+                        description = "ExcelService.GetExcelDataAsync çaðrýsý",
+                        success = true,
+                        result = new { returnedCount = serviceResult.Count, hasData = serviceResult.Any() }
+                    });
+
+                    // Adým 5: Ýlk kayýtlarýn örneði
+                    if (serviceResult.Any())
+                    {
+                        var sample = serviceResult.Take(2).Select(r => new
+                        {
+                            r.Id,
+                            r.FileName,
+                            r.SheetName,
+                            r.RowIndex,
+                            ColumnCount = r.Data?.Count ?? 0,
+                            FirstColumns = r.Data?.Take(3).ToDictionary(kvp => kvp.Key, kvp => kvp.Value) ?? new Dictionary<string, string>()
+                        });
+
+                        steps.Add(new
+                        {
+                            step = 5,
+                            description = "Veri örnekleri",
+                            success = true,
+                            result = sample
+                        });
+                    }
+
+                    return Ok(new
+                    {
+                        success = true,
+                        steps,
+                        finalResult = new
+                        {
+                            fileName,
+                            sheetName,
+                            page,
+                            pageSize,
+                            resultCount = serviceResult.Count,
+                            hasData = serviceResult.Any()
+                        },
+                        message = "Veri akýþ testi tamamlandý"
+                    });
+                }
+                catch (Exception serviceEx)
+                {
+                    steps.Add(new
+                    {
+                        step = 4,
+                        description = "ExcelService.GetExcelDataAsync çaðrýsý",
+                        success = false,
+                        error = serviceEx.Message
+                    });
+
+                    return Ok(new { success = false, steps, message = "Service katmanýnda hata" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Data flow test'te hata: {FileName}", fileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message,
+                    fileName = fileName
+                });
+            }
+        }
+
+        private object GetDiagnosis(dynamic fileInfo, dynamic dataInfo, dynamic sheetInfo)
+        {
+            var issues = new List<string>();
+            var recommendations = new List<string>();
+
+            if (!fileInfo.exists)
+            {
+                issues.Add("Dosya veritabanýnda bulunamadý");
+                recommendations.Add("Dosyayý yeniden yükleyin");
+            }
+            else if (!fileInfo.isActive)
+            {
+                issues.Add("Dosya aktif deðil");
+                recommendations.Add("Dosya silinmiþ olabilir, yeniden yükleyin");
+            }
+            else if (!fileInfo.physicalFileExists)
+            {
+                issues.Add("Fiziksel dosya bulunamadý");
+                recommendations.Add("Dosya sistemi dosyasý silinmiþ, yeniden yükleyin");
+            }
+            else if (dataInfo.activeDataRows == 0)
+            {
+                if (dataInfo.totalDataRows == 0)
+                {
+                    issues.Add("Dosya hiç okunmamýþ");
+                    recommendations.Add("POST /api/excel/read/{fileName} endpoint'ini kullanarak dosyayý okuyun");
+                }
+                else
+                {
+                    issues.Add("Tüm veriler silinmiþ durumda");
+                    recommendations.Add("Dosyayý yeniden okuyun");
+                }
+            }
+            else if (!string.IsNullOrEmpty((string)sheetInfo.requestedSheet) && !sheetInfo.requestedSheetExists)
+            {
+                issues.Add($"Ýstenen sheet '{sheetInfo.requestedSheet}' bulunamadý");
+                recommendations.Add($"Mevcut sheet'lerden birini kullanýn: {string.Join(", ", sheetInfo.availableSheets)}");
+            }
+            else if (!string.IsNullOrEmpty((string)sheetInfo.requestedSheet) && sheetInfo.sheetDataCount == 0)
+            {
+                issues.Add($"Ýstenen sheet '{sheetInfo.requestedSheet}' var ama veri yok");
+                recommendations.Add("Dosyayý yeniden okuyun veya baþka bir sheet seçin");
+            }
+
+            if (issues.Count == 0)
+            {
+                issues.Add("Belirgin bir sorun tespit edilmedi");
+                recommendations.Add("Frontend'deki parametreleri kontrol edin");
+            }
+
+            return new { issues, recommendations };
         }
      }
 }

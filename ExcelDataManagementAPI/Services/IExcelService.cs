@@ -10,11 +10,15 @@ namespace ExcelDataManagementAPI.Services
         
         Task<List<ExcelDataResponseDto>> GetExcelDataAsync(string fileName, string? sheetName = null, int page = 1, int pageSize = 50);
         
+        Task<List<ExcelDataResponseDto>> GetAllExcelDataAsync(string fileName, string? sheetName = null);
+        
         Task<ExcelDataResponseDto> UpdateExcelDataAsync(ExcelDataUpdateDto updateDto);
         
         Task<List<ExcelDataResponseDto>> BulkUpdateExcelDataAsync(BulkUpdateDto bulkUpdateDto);
         
         Task<bool> DeleteExcelDataAsync(int id, string? deletedBy = null);
+        
+        Task<bool> DeleteExcelFileAsync(string fileName, string? deletedBy = null);
         
         Task<ExcelDataResponseDto> AddExcelRowAsync(string fileName, string sheetName, Dictionary<string, string> rowData, string? addedBy = null);
         
