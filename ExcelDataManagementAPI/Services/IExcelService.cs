@@ -16,7 +16,7 @@ namespace ExcelDataManagementAPI.Services
         
         Task<bool> DeleteExcelDataAsync(int id, string? deletedBy = null);
         
-        Task<ExcelDataResponseDto> AddExcelRowAsync(string fileName, string sheetName, Dictionary<string, object> rowData, string? addedBy = null);
+        Task<ExcelDataResponseDto> AddExcelRowAsync(string fileName, string sheetName, Dictionary<string, string> rowData, string? addedBy = null);
         
         Task<byte[]> ExportToExcelAsync(ExcelExportRequestDto exportRequest);
         

@@ -4,83 +4,110 @@ using ExcelDataManagementAPI.Data;
 using ExcelDataManagementAPI.Services;
 using OfficeOpenXml;
 
-var builder = WebApplication.CreateBuilder(args);
-
-ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
-
-builder.WebHost.UseUrls("http://localhost:5002", "https://localhost:7002");
-
-builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(c =>
+namespace ExcelDataManagementAPI
 {
-    c.SwaggerDoc("v1", new OpenApiInfo { Title = "Excel Data Management API", Version = "v1" });
-});
-
-builder.Services.AddDbContext<ExcelDataContext>(options =>
-{
-    var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-    options.UseSqlServer(connectionString);
-});
-
-builder.Services.AddScoped<IExcelService, ExcelService>();
-builder.Services.AddScoped<IDataComparisonService, DataComparisonService>();
-
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("FrontendPolicy", policy =>
+    public class Program
     {
-        policy.WithOrigins(
-                "http://localhost:3000", 
-                "http://localhost:4200", 
-                "http://localhost:5173",  
-                "http://localhost:8080",  
-                "http://127.0.0.1:3000",
-                "http://127.0.0.1:4200",
-                "http://127.0.0.1:5173",
-                "http://127.0.0.1:8080"
-              )
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials();
-    });
+        public static async Task Main(string[] args)
+        {
+            var builder = WebApplication.CreateBuilder(args);
 
-    options.AddPolicy("AllowAll", policy =>
-    {
-        policy.AllowAnyOrigin()
-              .AllowAnyHeader()
-              .AllowAnyMethod();
-    });
-});
+            // EPPlus lisansı
+            ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
-var app = builder.Build();
+            // Servis kayıtları
+            builder.Services.AddControllers();
+            builder.Services.AddEndpointsApiExplorer();
+            
+            // Swagger konfigürasyonu
+            builder.Services.AddSwaggerGen(c =>
+            {
+                c.SwaggerDoc("v1", new OpenApiInfo
+                {
+                    Title = "Excel Data Management API",
+                    Version = "v1",
+                    Description = "Excel dosyalarını yönetmek ve karşılaştırmak için API"
+                });
+            });
 
-try
-{
-    using var scope = app.Services.CreateScope();
-    var context = scope.ServiceProvider.GetRequiredService<ExcelDataContext>();
-    await context.Database.EnsureCreatedAsync();
-    Console.WriteLine("✅ Veritabanı hazır!");
+            // Veritabanı bağlantısı
+            builder.Services.AddDbContext<ExcelDataContext>(options =>
+            {
+                options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+            });
+
+            // Dependency Injection
+            builder.Services.AddScoped<IExcelService, ExcelService>();
+            builder.Services.AddScoped<IDataComparisonService, DataComparisonService>();
+
+            // Dosya upload konfigürasyonu
+            builder.Services.Configure<IISServerOptions>(options =>
+            {
+                options.MaxRequestBodySize = 100 * 1024 * 1024; // 100MB
+            });
+
+            // CORS
+            builder.Services.AddCors(options =>
+            {
+                options.AddPolicy("ApiPolicy", policy =>
+                {
+                    policy.AllowAnyOrigin()
+                          .AllowAnyHeader()
+                          .AllowAnyMethod();
+                });
+            });
+
+            var app = builder.Build();
+
+            // Development ortamı
+            if (app.Environment.IsDevelopment())
+            {
+                app.UseDeveloperExceptionPage();
+                app.UseSwagger();
+                app.UseSwaggerUI(c =>
+                {
+                    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Excel Data Management API v1");
+                    c.RoutePrefix = "swagger";
+                });
+            }
+            else
+            {
+                app.UseHttpsRedirection();
+            }
+
+            // Static files
+            app.UseStaticFiles();
+
+            // Middleware sırası
+            app.UseCors("ApiPolicy");
+            app.UseAuthorization();
+            app.MapControllers();
+
+            // Veritabanı kontrolü
+            try
+            {
+                using var scope = app.Services.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<ExcelDataContext>();
+                await context.Database.EnsureCreatedAsync();
+                Console.WriteLine("✅ Veritabanı hazır!");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Veritabanı hatası: {ex.Message}");
+            }
+
+            // Port bilgilerini dinamik olarak al
+            var addresses = app.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>().Features
+                .Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>();
+
+            Console.WriteLine("🚀 Excel Data Management API başlatıldı!");
+            Console.WriteLine("📖 Swagger UI: http://localhost:5002/swagger");
+            Console.WriteLine("🌐 API Base URL: http://localhost:5002/api");
+            Console.WriteLine("🔒 HTTPS Swagger UI: https://localhost:7002/swagger");
+            Console.WriteLine("🔒 HTTPS API Base URL: https://localhost:7002/api");
+            Console.WriteLine("💡 LaunchSettings.json'daki portlar kullanılıyor");
+
+            app.Run();
+        }
+    }
 }
-catch (Exception ex)
-{
-    Console.WriteLine($"❌ Veritabanı hatası: {ex.Message}");
-}
-
-app.UseSwagger();
-app.UseSwaggerUI(c =>
-{
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Excel Data Management API V1");
-    c.RoutePrefix = "";
-});
-
-app.UseCors("FrontendPolicy");
-app.UseAuthorization();
-app.MapControllers();
-
-Console.WriteLine("🚀 API başlatıldı!");
-Console.WriteLine("📖 Swagger UI: http://localhost:5002");
-Console.WriteLine("🌐 API: http://localhost:5002/api");
-Console.WriteLine("🔗 Frontend CORS: 3000, 4200, 5173, 8080 portları destekleniyor");
-
-app.Run();

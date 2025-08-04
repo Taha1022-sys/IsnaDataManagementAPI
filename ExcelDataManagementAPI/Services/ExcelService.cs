@@ -95,11 +95,11 @@ namespace ExcelDataManagementAPI.Services
                 var rowCount = worksheet.Dimension?.Rows ?? 0;
                 for (int row = 2; row <= rowCount; row++)
                 {
-                    var rowData = new Dictionary<string, object>();
+                    var rowData = new Dictionary<string, string>();
                     for (int col = 1; col <= headers.Count; col++)
                     {
                         var cellValue = worksheet.Cells[row, col].Value;
-                        rowData[headers[col - 1]] = cellValue ?? "";
+                        rowData[headers[col - 1]] = cellValue?.ToString() ?? "";
                     }
 
                     var dataRow = new ExcelDataRow
@@ -156,7 +156,7 @@ namespace ExcelDataManagementAPI.Services
                 FileName = r.FileName,
                 SheetName = r.SheetName,
                 RowIndex = r.RowIndex,
-                Data = JsonSerializer.Deserialize<Dictionary<string, object>>(r.RowData) ?? new Dictionary<string, object>(),
+                Data = JsonSerializer.Deserialize<Dictionary<string, string>>(r.RowData) ?? new Dictionary<string, string>(),
                 CreatedDate = r.CreatedDate,
                 ModifiedDate = r.ModifiedDate,
                 Version = r.Version,
@@ -218,7 +218,7 @@ namespace ExcelDataManagementAPI.Services
             return true;
         }
 
-        public async Task<ExcelDataResponseDto> AddExcelRowAsync(string fileName, string sheetName, Dictionary<string, object> rowData, string? addedBy = null)
+        public async Task<ExcelDataResponseDto> AddExcelRowAsync(string fileName, string sheetName, Dictionary<string, string> rowData, string? addedBy = null)
         {
             var maxRowIndex = await _context.ExcelDataRows
                 .Where(r => r.FileName == fileName && r.SheetName == sheetName)
@@ -270,7 +270,7 @@ namespace ExcelDataManagementAPI.Services
             if (rows.Any())
             {
                 // Header'larý ekle
-                var firstRowData = JsonSerializer.Deserialize<Dictionary<string, object>>(rows.First().RowData) ?? new Dictionary<string, object>();
+                var firstRowData = JsonSerializer.Deserialize<Dictionary<string, string>>(rows.First().RowData) ?? new Dictionary<string, string>();
                 var headers = firstRowData.Keys.ToList();
 
                 for (int i = 0; i < headers.Count; i++)
@@ -281,7 +281,7 @@ namespace ExcelDataManagementAPI.Services
                 // Verileri ekle
                 for (int rowIndex = 0; rowIndex < rows.Count; rowIndex++)
                 {
-                    var rowData = JsonSerializer.Deserialize<Dictionary<string, object>>(rows[rowIndex].RowData) ?? new Dictionary<string, object>();
+                    var rowData = JsonSerializer.Deserialize<Dictionary<string, string>>(rows[rowIndex].RowData) ?? new Dictionary<string, string>();
                     for (int colIndex = 0; colIndex < headers.Count; colIndex++)
                     {
                         worksheet.Cells[rowIndex + 2, colIndex + 1].Value = rowData.ContainsKey(headers[colIndex]) ? rowData[headers[colIndex]] : "";

@@ -25,7 +25,7 @@ namespace ExcelDataManagementAPI.Data
                 entity.Property(e => e.UploadedBy).HasMaxLength(255);
                 entity.HasIndex(e => e.FileName);
             });
-            
+             
             modelBuilder.Entity<ExcelDataRow>(entity =>
             {
                 entity.HasKey(e => e.Id);

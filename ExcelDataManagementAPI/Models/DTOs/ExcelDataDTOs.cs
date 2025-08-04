@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ExcelDataManagementAPI.Models.DTOs
 {
     public class FileUploadDto
@@ -12,7 +14,10 @@ namespace ExcelDataManagementAPI.Models.DTOs
         public string FileName { get; set; } = string.Empty;
         public string SheetName { get; set; } = string.Empty;
         public int RowIndex { get; set; }
-        public Dictionary<string, object> Data { get; set; } = new();
+        
+        [JsonPropertyName("data")]
+        public Dictionary<string, string> Data { get; set; } = new();
+        
         public DateTime CreatedDate { get; set; }
         public DateTime? ModifiedDate { get; set; }
         public int Version { get; set; }
@@ -22,7 +27,10 @@ namespace ExcelDataManagementAPI.Models.DTOs
     public class ExcelDataUpdateDto
     {
         public int Id { get; set; }
-        public Dictionary<string, object> Data { get; set; } = new();
+        
+        [JsonPropertyName("data")]
+        public Dictionary<string, string> Data { get; set; } = new();
+        
         public string? ModifiedBy { get; set; }
     }
     
@@ -40,8 +48,8 @@ namespace ExcelDataManagementAPI.Models.DTOs
     {
         public int RowIndex { get; set; }
         public string ColumnName { get; set; } = string.Empty;
-        public object? OldValue { get; set; }
-        public object? NewValue { get; set; }
+        public string? OldValue { get; set; }
+        public string? NewValue { get; set; }
         public DifferenceType Type { get; set; }
     }
     
@@ -94,7 +102,39 @@ namespace ExcelDataManagementAPI.Models.DTOs
     {
         public string FileName { get; set; } = string.Empty;
         public string SheetName { get; set; } = string.Empty;
-        public Dictionary<string, object> RowData { get; set; } = new();
+        
+        [JsonPropertyName("rowData")]
+        public Dictionary<string, string> RowData { get; set; } = new();
+        
         public string? AddedBy { get; set; }
+    }
+
+    // Manuel dosya seçimi için DTOs
+    public class ManualFileSelectionDto
+    {
+        public IFormFile ExcelFile { get; set; } = null!;
+        public string Operation { get; set; } = string.Empty; // "read", "compare", "update"
+        public string? SheetName { get; set; }
+        public string? ProcessedBy { get; set; }
+    }
+
+    public class CompareExcelFilesDto
+    {
+        public IFormFile File1 { get; set; } = null!;
+        public IFormFile File2 { get; set; } = null!;
+        public string? Sheet1Name { get; set; }
+        public string? Sheet2Name { get; set; }
+        public string? ComparedBy { get; set; }
+    }
+
+    public class UpdateExcelFileDto
+    {
+        public IFormFile ExcelFile { get; set; } = null!;
+        
+        [JsonPropertyName("updateData")]
+        public Dictionary<string, string>? UpdateData { get; set; }
+        
+        public string? SheetName { get; set; }
+        public string? UpdatedBy { get; set; }
     }
 }

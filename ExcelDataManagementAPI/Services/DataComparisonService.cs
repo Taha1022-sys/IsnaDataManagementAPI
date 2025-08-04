@@ -45,12 +45,12 @@ namespace ExcelDataManagementAPI.Services
                     else
                     {
                         // Satýrlarý karþýlaþtýr
-                        var row1Data = JsonSerializer.Deserialize<Dictionary<string, object>>(row1.RowData) ?? new Dictionary<string, object>();
-                        var row2Data = JsonSerializer.Deserialize<Dictionary<string, object>>(correspondingRow2.RowData) ?? new Dictionary<string, object>();
+                        var row1Data = JsonSerializer.Deserialize<Dictionary<string, string>>(row1.RowData) ?? new Dictionary<string, string>();
+                        var row2Data = JsonSerializer.Deserialize<Dictionary<string, string>>(correspondingRow2.RowData) ?? new Dictionary<string, string>();
 
                         foreach (var kvp in row1Data)
                         {
-                            if (!row2Data.ContainsKey(kvp.Key) || !Equals(kvp.Value, row2Data[kvp.Key]))
+                            if (!row2Data.ContainsKey(kvp.Key) || kvp.Value != row2Data[kvp.Key])
                             {
                                 differences.Add(new DataDifferenceDto
                                 {
@@ -235,7 +235,7 @@ namespace ExcelDataManagementAPI.Services
                 var baseRow = await _context.ExcelDataRows.FindAsync(rowId);
                 if (baseRow == null)
                     throw new Exception($"Satýr bulunamadý: {rowId}");
-
+                
                 // Ayný dosya, sheet ve satýr indexindeki tüm versiyonlarý al
                 var history = await _context.ExcelDataRows
                     .Where(r => r.FileName == baseRow.FileName && 
