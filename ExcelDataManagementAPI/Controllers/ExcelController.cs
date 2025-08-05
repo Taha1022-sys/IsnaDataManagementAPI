@@ -213,18 +213,21 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(request.SheetName);
+
                 // Önce dosyayý yükle
                 var uploadedFile = await _excelService.UploadExcelFileAsync(request.ExcelFile, request.ProcessedBy);
                 
                 // Sonra oku
-                var data = await _excelService.ReadExcelDataAsync(uploadedFile.FileName, request.SheetName);
+                var data = await _excelService.ReadExcelDataAsync(uploadedFile.FileName, normalizedSheetName);
                 
                 return Ok(new { 
                     success = true, 
                     data = data,
                     fileName = uploadedFile.FileName,
                     originalFileName = uploadedFile.OriginalFileName,
-                    sheetName = request.SheetName,
+                    sheetName = normalizedSheetName,
                     totalRows = data.Count,
                     message = "Excel dosyasý baþarýyla okundu ve veritabanýna aktarýldý"
                 });
@@ -263,11 +266,14 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(request.SheetName);
+
                 // Önce dosyayý yükle
                 var uploadedFile = await _excelService.UploadExcelFileAsync(request.ExcelFile, request.UpdatedBy);
                 
                 // Dosyayý oku
-                var data = await _excelService.ReadExcelDataAsync(uploadedFile.FileName, request.SheetName);
+                var data = await _excelService.ReadExcelDataAsync(uploadedFile.FileName, normalizedSheetName);
                 
                 return Ok(new { 
                     success = true, 
@@ -303,12 +309,15 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
-                var data = await _excelService.ReadExcelDataAsync(fileName, sheetName);
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(sheetName);
+                
+                var data = await _excelService.ReadExcelDataAsync(fileName, normalizedSheetName);
                 return Ok(new { 
                     success = true, 
                     data = data,
                     fileName = fileName,
-                    sheetName = sheetName,
+                    sheetName = normalizedSheetName,
                     totalRows = data.Count,
                     message = "Excel verisi baþarýyla okundu ve veritabanýna aktarýldý"
                 });
@@ -331,8 +340,11 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(sheetName);
+
                 _logger.LogInformation("GetExcelData çaðrýldý: FileName={FileName}, SheetName={SheetName}, Page={Page}, PageSize={PageSize}", 
-                    fileName, sheetName, page, pageSize);
+                    fileName, normalizedSheetName, page, pageSize);
 
                 // Parametre validasyonu
                 if (page < 1) page = 1;
@@ -358,8 +370,8 @@ namespace ExcelDataManagementAPI.Controllers
                 }
 
                 // Verileri service'den getir
-                var data = await _excelService.GetExcelDataAsync(fileName, sheetName, page, pageSize);
-                var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
+                var data = await _excelService.GetExcelDataAsync(fileName, normalizedSheetName, page, pageSize);
+                var statistics = await _excelService.GetDataStatisticsAsync(fileName, normalizedSheetName);
 
                 // Debug bilgisi
                 _logger.LogInformation("Service'den dönen veri sayýsý: {Count}", data?.Count ?? 0);
@@ -382,7 +394,7 @@ namespace ExcelDataManagementAPI.Controllers
                             success = true,
                             data = new List<object>(),
                             fileName = fileName,
-                            sheetName = sheetName,
+                            sheetName = normalizedSheetName,
                             page = page,
                             pageSize = pageSize,
                             totalRows = 0,
@@ -400,10 +412,10 @@ namespace ExcelDataManagementAPI.Controllers
                     }
                     
                     // Sheet belirtilmiþse ve o sheet'te veri yoksa
-                    if (!string.IsNullOrEmpty(sheetName))
+                    if (!string.IsNullOrEmpty(normalizedSheetName))
                     {
                         var sheetExists = await _context.ExcelDataRows
-                            .AnyAsync(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted);
+                            .AnyAsync(r => r.FileName == fileName && r.SheetName == normalizedSheetName && !r.IsDeleted);
 
                         if (!sheetExists)
                         {
@@ -416,9 +428,9 @@ namespace ExcelDataManagementAPI.Controllers
                             return NotFound(new
                             {
                                 success = false,
-                                message = $"Belirtilen sayfa '{sheetName}' bulunamadý.",
+                                message = $"Belirtilen sayfa '{normalizedSheetName}' bulunamadý.",
                                 fileName = fileName,
-                                requestedSheet = sheetName,
+                                requestedSheet = normalizedSheetName,
                                 availableSheets = availableSheets,
                                 suggestion = availableSheets.Any() ? $"Mevcut sayfalardan birini seçin: {string.Join(", ", availableSheets)}" : "Bu dosyada henüz veri bulunmuyor."
                             });
@@ -435,7 +447,7 @@ namespace ExcelDataManagementAPI.Controllers
                     success = true,
                     data = data ?? new List<ExcelDataResponseDto>(),
                     fileName = fileName,
-                    sheetName = sheetName,
+                    sheetName = normalizedSheetName,
                     page = page,
                     pageSize = pageSize,
                     totalRows = totalRowsForPagination,
@@ -492,7 +504,10 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
-                _logger.LogInformation("GetAllExcelData çaðrýldý: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(sheetName);
+
+                _logger.LogInformation("GetAllExcelData çaðrýldý: FileName={FileName}, SheetName={SheetName}", fileName, normalizedSheetName);
 
                 // Önce dosyanýn var olup olmadýðýný kontrol et
                 var fileExists = await _context.ExcelFiles
@@ -513,8 +528,8 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                var data = await _excelService.GetAllExcelDataAsync(fileName, sheetName);
-                var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
+                var data = await _excelService.GetAllExcelDataAsync(fileName, normalizedSheetName);
+                var statistics = await _excelService.GetDataStatisticsAsync(fileName, normalizedSheetName);
 
                 // Debug bilgisi
                 _logger.LogInformation("Service'den dönen tüm veri sayýsý: {Count}", data?.Count ?? 0);
@@ -537,7 +552,7 @@ namespace ExcelDataManagementAPI.Controllers
                             success = true,
                             data = new List<object>(),
                             fileName = fileName,
-                            sheetName = sheetName,
+                            sheetName = normalizedSheetName,
                             totalRows = 0,
                             statistics = statistics,
                             hasData = false,
@@ -552,7 +567,7 @@ namespace ExcelDataManagementAPI.Controllers
                     }
                     
                     // Sheet belirtilmiþse ve o sheet'te veri yoksa
-                    if (!string.IsNullOrEmpty(sheetName))
+                    if (!string.IsNullOrEmpty(normalizedSheetName))
                     {
                         var availableSheets = await _context.ExcelDataRows
                             .Where(r => r.FileName == fileName && !r.IsDeleted)
@@ -563,9 +578,9 @@ namespace ExcelDataManagementAPI.Controllers
                         return NotFound(new
                         {
                             success = false,
-                            message = $"Belirtilen sayfa '{sheetName}' bulunamadý.",
+                            message = $"Belirtilen sayfa '{normalizedSheetName}' bulunamadý.",
                             fileName = fileName,
-                            requestedSheet = sheetName,
+                            requestedSheet = normalizedSheetName,
                             availableSheets = availableSheets,
                             suggestion = availableSheets.Any() ? $"Mevcut sayfalardan birini seçin: {string.Join(", ", availableSheets)}" : "Bu dosyada henüz veri bulunmuyor."
                         });
@@ -576,7 +591,7 @@ namespace ExcelDataManagementAPI.Controllers
                     success = true, 
                     data = data ?? new List<ExcelDataResponseDto>(), 
                     fileName = fileName,
-                    sheetName = sheetName,
+                    sheetName = normalizedSheetName,
                     totalRows = data?.Count ?? 0,
                     statistics = statistics,
                     hasData = data != null && data.Count > 0,
@@ -902,6 +917,9 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(sheetName);
+                
                 if (string.IsNullOrEmpty(fileName))
                 {
                     return BadRequest(new { 
@@ -910,12 +928,12 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
+                var statistics = await _excelService.GetDataStatisticsAsync(fileName, normalizedSheetName);
                 return Ok(new { 
                     success = true, 
                     data = statistics,
                     fileName = fileName,
-                    sheetName = sheetName,
+                    sheetName = normalizedSheetName,
                     message = "Ýstatistikler baþarýyla getirildi"
                 });
             }
@@ -1091,6 +1109,20 @@ namespace ExcelDataManagementAPI.Controllers
         public IActionResult DebugTest()
         {
             return Ok(new { success = true, message = "Debug test baþarýlý" });
+        }
+
+        /// <summary>
+        /// SheetName'i normalize eder - "undefined" string'ini null'a çevirir
+        /// </summary>
+        private string? NormalizeSheetName(string? sheetName)
+        {
+            if (string.IsNullOrEmpty(sheetName) || 
+                string.Equals(sheetName, "undefined", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(sheetName, "null", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            return sheetName.Trim();
         }
     }
 }

@@ -81,6 +81,10 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                // SheetName'leri normalize et - "undefined" ise null yap
+                var sheet1Name = NormalizeSheetName(request.Sheet1Name);
+                var sheet2Name = NormalizeSheetName(request.Sheet2Name);
+
                 _logger.LogInformation("Excel dosya karþýlaþtýrmasý baþlatýldý: {File1} vs {File2}", 
                     request.File1.FileName, request.File2.FileName);
 
@@ -92,8 +96,8 @@ namespace ExcelDataManagementAPI.Controllers
                     request.File1.FileName, uploadedFile1.FileName, request.File2.FileName, uploadedFile2.FileName);
 
                 // Her iki dosyayý da oku
-                var file1Data = await _excelService.ReadExcelDataAsync(uploadedFile1.FileName, request.Sheet1Name);
-                var file2Data = await _excelService.ReadExcelDataAsync(uploadedFile2.FileName, request.Sheet2Name);
+                var file1Data = await _excelService.ReadExcelDataAsync(uploadedFile1.FileName, sheet1Name);
+                var file2Data = await _excelService.ReadExcelDataAsync(uploadedFile2.FileName, sheet2Name);
 
                 _logger.LogInformation("Dosya verileri okundu: File1={RowCount1} rows, File2={RowCount2} rows", 
                     file1Data.Count, file2Data.Count);
@@ -102,7 +106,7 @@ namespace ExcelDataManagementAPI.Controllers
                 var result = await _comparisonService.CompareFilesAsync(
                     uploadedFile1.FileName, 
                     uploadedFile2.FileName, 
-                    request.Sheet1Name ?? request.Sheet2Name);
+                    sheet1Name ?? sheet2Name);
 
                 _logger.LogInformation("Karþýlaþtýrma tamamlandý: {DifferenceCount} fark bulundu", 
                     result.Differences?.Count ?? 0);
@@ -118,14 +122,14 @@ namespace ExcelDataManagementAPI.Controllers
                         { 
                             name = uploadedFile1.FileName, 
                             original = uploadedFile1.OriginalFileName,
-                            sheet = request.Sheet1Name,
+                            sheet = sheet1Name,
                             rowCount = file1Data.Count
                         },
                         file2 = new 
                         { 
                             name = uploadedFile2.FileName, 
                             original = uploadedFile2.OriginalFileName,
-                            sheet = request.Sheet2Name,
+                            sheet = sheet2Name,
                             rowCount = file2Data.Count
                         }
                     },
@@ -190,13 +194,16 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(compareRequest.SheetName);
+
                 _logger.LogInformation("Yüklü dosya karþýlaþtýrmasý baþlatýldý: {File1} vs {File2}, Sheet: {Sheet}", 
-                    compareRequest.FileName1, compareRequest.FileName2, compareRequest.SheetName);
+                    compareRequest.FileName1, compareRequest.FileName2, normalizedSheetName);
 
                 var result = await _comparisonService.CompareFilesAsync(
                     compareRequest.FileName1, 
                     compareRequest.FileName2, 
-                    compareRequest.SheetName);
+                    normalizedSheetName);
 
                 _logger.LogInformation("Karþýlaþtýrma tamamlandý: {DifferenceCount} fark bulundu", 
                     result.Differences?.Count ?? 0);
@@ -263,6 +270,9 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(compareRequest.SheetName);
+
                 _logger.LogInformation("Versiyon karþýlaþtýrmasý baþlatýldý: {FileName}, {Date1} vs {Date2}", 
                     compareRequest.FileName, compareRequest.Version1Date, compareRequest.Version2Date);
 
@@ -270,7 +280,7 @@ namespace ExcelDataManagementAPI.Controllers
                     compareRequest.FileName, 
                     compareRequest.Version1Date, 
                     compareRequest.Version2Date, 
-                    compareRequest.SheetName);
+                    normalizedSheetName);
 
                 _logger.LogInformation("Versiyon karþýlaþtýrmasý tamamlandý: {DifferenceCount} fark bulundu", 
                     result.Differences?.Count ?? 0);
@@ -283,7 +293,7 @@ namespace ExcelDataManagementAPI.Controllers
                         fileName = compareRequest.FileName,
                         version1Date = compareRequest.Version1Date,
                         version2Date = compareRequest.Version2Date,
-                        sheetName = compareRequest.SheetName
+                        sheetName = normalizedSheetName
                     },
                     summary = new
                     {
@@ -337,16 +347,19 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(sheetName);
+
                 _logger.LogInformation("Deðiþiklik listesi istendi: {FileName}, {FromDate} - {ToDate}", 
                     fileName, fromDate, toDate);
 
-                var changes = await _comparisonService.GetChangesAsync(fileName, fromDate, toDate, sheetName);
+                var changes = await _comparisonService.GetChangesAsync(fileName, fromDate, toDate, normalizedSheetName);
 
                 return Ok(new { 
                     success = true, 
                     data = changes,
                     fileName = fileName,
-                    sheetName = sheetName,
+                    sheetName = normalizedSheetName,
                     dateRange = new
                     {
                         fromDate = fromDate,
@@ -393,15 +406,18 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                _logger.LogInformation("Deðiþiklik geçmiþi istendi: {FileName}, Sheet: {SheetName}", fileName, sheetName);
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(sheetName);
 
-                var history = await _comparisonService.GetChangeHistoryAsync(fileName, sheetName);
+                _logger.LogInformation("Deðiþiklik geçmiþi istendi: {FileName}, Sheet: {SheetName}", fileName, normalizedSheetName);
+
+                var history = await _comparisonService.GetChangeHistoryAsync(fileName, normalizedSheetName);
 
                 return Ok(new { 
                     success = true, 
                     data = history,
                     fileName = fileName,
-                    sheetName = sheetName,
+                    sheetName = normalizedSheetName,
                     totalEntries = history.Count,
                     message = history.Any() 
                         ? $"{history.Count} geçmiþ kaydý bulundu" 
@@ -503,6 +519,9 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(compareRequest.SheetName);
+
                 _logger.LogInformation("Snapshot karþýlaþtýrmasý baþlatýldý: {FileName}, {Date1} vs {Date2}", 
                     compareRequest.FileName, compareRequest.Version1Date, compareRequest.Version2Date);
 
@@ -510,7 +529,7 @@ namespace ExcelDataManagementAPI.Controllers
                     compareRequest.FileName, 
                     compareRequest.Version1Date, 
                     compareRequest.Version2Date, 
-                    compareRequest.SheetName);
+                    normalizedSheetName);
 
                 _logger.LogInformation("Snapshot karþýlaþtýrmasý tamamlandý: {DifferenceCount} fark bulundu", 
                     result.Differences?.Count ?? 0);
@@ -524,7 +543,7 @@ namespace ExcelDataManagementAPI.Controllers
                         fileName = compareRequest.FileName,
                         snapshot1Date = compareRequest.Version1Date,
                         snapshot2Date = compareRequest.Version2Date,
-                        sheetName = compareRequest.SheetName,
+                        sheetName = normalizedSheetName,
                         timeDifference = compareRequest.Version2Date - compareRequest.Version1Date
                     },
                     summary = new
@@ -564,14 +583,17 @@ namespace ExcelDataManagementAPI.Controllers
                 fileName1 = Uri.UnescapeDataString(fileName1);
                 fileName2 = Uri.UnescapeDataString(fileName2);
 
+                // SheetName'i normalize et - "undefined" ise null yap
+                var normalizedSheetName = NormalizeSheetName(sheetName);
+
                 _logger.LogInformation("Test karþýlaþtýrmasý baþlatýldý: {File1} vs {File2}", fileName1, fileName2);
 
                 // 1. Dosya verilerini kontrol et
-                var file1Data = await _excelService.GetAllExcelDataAsync(fileName1, sheetName);
-                var file2Data = await _excelService.GetAllExcelDataAsync(fileName2, sheetName);
+                var file1Data = await _excelService.GetAllExcelDataAsync(fileName1, normalizedSheetName);
+                var file2Data = await _excelService.GetAllExcelDataAsync(fileName2, normalizedSheetName);
 
                 // 2. Karþýlaþtýrma servisini test et
-                var comparisonResult = await _comparisonService.CompareFilesAsync(fileName1, fileName2, sheetName);
+                var comparisonResult = await _comparisonService.CompareFilesAsync(fileName1, fileName2, normalizedSheetName);
 
                 return Ok(new
                 {
@@ -705,6 +727,20 @@ namespace ExcelDataManagementAPI.Controllers
                     message = ex.Message
                 });
             }
+        }
+
+        /// <summary>
+        /// SheetName'i normalize eder - "undefined" string'ini null'a çevirir
+        /// </summary>
+        private string? NormalizeSheetName(string? sheetName)
+        {
+            if (string.IsNullOrEmpty(sheetName) || 
+                string.Equals(sheetName, "undefined", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(sheetName, "null", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            return sheetName.Trim();
         }
     }
 }
