@@ -3,6 +3,8 @@ using Microsoft.OpenApi.Models;
 using ExcelDataManagementAPI.Data;
 using ExcelDataManagementAPI.Services;
 using OfficeOpenXml;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace ExcelDataManagementAPI
 {
@@ -15,8 +17,27 @@ namespace ExcelDataManagementAPI
             // EPPlus lisansı
             ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
-            // Servis kayıtları
-            builder.Services.AddControllers();
+            // JSON Serialization ayarları - Unicode karakterler için
+            builder.Services.ConfigureHttpJsonOptions(options =>
+            {
+                options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+                options.SerializerOptions.WriteIndented = true;
+                options.SerializerOptions.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+                options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+                options.SerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+            });
+
+            // Controller servislerine JSON ayarları
+            builder.Services.AddControllers()
+                .AddJsonOptions(options =>
+                {
+                    options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+                    options.JsonSerializerOptions.WriteIndented = true;
+                    options.JsonSerializerOptions.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+                    options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+                    options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+                });
+
             builder.Services.AddEndpointsApiExplorer();
             
             // Swagger konfigürasyonu
@@ -121,8 +142,9 @@ namespace ExcelDataManagementAPI
             Console.WriteLine("🔒 HTTPS Swagger UI: https://localhost:7002/swagger");
             Console.WriteLine("🔒 HTTPS API Base URL: https://localhost:7002/api");
             Console.WriteLine("🌐 Frontend URL: http://localhost:5174");
-            Console.WriteLine("✅ CORS yapılandırması aktif - Frontend bağlantısı hazır!");
+            Console.WriteLine("✅ CORS yapılandırması aktiv - Frontend bağlantısı hazır!");
             Console.WriteLine("💡 LaunchSettings.json'daki portlar kullanılıyor");
+            Console.WriteLine("🔧 JSON Serialization: Unicode karakterler destekleniyor");
 
             app.Run();
         }

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using ExcelDataManagementAPI.Data;
 using ExcelDataManagementAPI.Services;
 using ExcelDataManagementAPI.Models.DTOs;
+using System.Text.Json;
 
 namespace ExcelDataManagementAPI.Controllers
 {
@@ -126,6 +127,7 @@ namespace ExcelDataManagementAPI.Controllers
                 return Ok(new { 
                     success = true, 
                     data = files,
+                    count = files.Count,
                     message = "Yüklü Excel dosyalarý"
                 });
             }
@@ -319,7 +321,7 @@ namespace ExcelDataManagementAPI.Controllers
         }
 
         /// <summary>
-        /// Dosyadan veri getirme (sayfalama ile)
+        /// Dosyadan veri getirme (sayfalama ile) - ÝYÝLEÞTÝRÝLDÝ
         /// </summary>
         [HttpGet("data/{fileName}")]
         public async Task<IActionResult> GetExcelData(string fileName, [FromQuery] string? sheetName = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
@@ -329,7 +331,12 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
-                _logger.LogInformation("Veri getirilmeye çalýþýlýyor: FileName={FileName}, SheetName={SheetName}, Page={Page}", fileName, sheetName, page);
+                _logger.LogInformation("GetExcelData çaðrýldý: FileName={FileName}, SheetName={SheetName}, Page={Page}, PageSize={PageSize}", 
+                    fileName, sheetName, page, pageSize);
+
+                // Parametre validasyonu
+                if (page < 1) page = 1;
+                if (pageSize < 1 || pageSize > 1000) pageSize = 50;
 
                 // Önce dosyanýn var olup olmadýðýný kontrol et
                 var fileExists = await _context.ExcelFiles
@@ -345,17 +352,20 @@ namespace ExcelDataManagementAPI.Controllers
                         fileName = fileName,
                         availableFiles = await _context.ExcelFiles
                             .Where(f => f.IsActive)
-                            .Select(f => f.FileName)
+                            .Select(f => new { f.FileName, f.OriginalFileName })
                             .ToListAsync()
                     });
                 }
 
-                // Verileri getir
+                // Verileri service'den getir
                 var data = await _excelService.GetExcelDataAsync(fileName, sheetName, page, pageSize);
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
 
+                // Debug bilgisi
+                _logger.LogInformation("Service'den dönen veri sayýsý: {Count}", data?.Count ?? 0);
+
                 // Eðer veri yoksa ancak dosya varsa, dosyanýn okunup okunmadýðýný kontrol et
-                if (data.Count == 0)
+                if (data == null || data.Count == 0)
                 {
                     var totalDataCount = await _context.ExcelDataRows
                         .Where(r => r.FileName == fileName && !r.IsDeleted)
@@ -375,6 +385,8 @@ namespace ExcelDataManagementAPI.Controllers
                             sheetName = sheetName,
                             page = page,
                             pageSize = pageSize,
+                            totalRows = 0,
+                            totalPages = 0,
                             statistics = statistics,
                             hasData = false,
                             availableSheets = availableSheets,
@@ -413,33 +425,64 @@ namespace ExcelDataManagementAPI.Controllers
                         }
                     }
                 }
+
+                // Baþarýlý response
+                var totalRowsForPagination = statistics != null ? (int)(statistics.GetType().GetProperty("totalRows")?.GetValue(statistics) ?? 0) : 0;
+                var totalPages = totalRowsForPagination > 0 ? (int)Math.Ceiling((double)totalRowsForPagination / pageSize) : 0;
                 
-                return Ok(new { 
-                    success = true, 
-                    data = data, 
+                var response = new
+                {
+                    success = true,
+                    data = data ?? new List<ExcelDataResponseDto>(),
                     fileName = fileName,
                     sheetName = sheetName,
-                    page = page, 
+                    page = page,
                     pageSize = pageSize,
+                    totalRows = totalRowsForPagination,
+                    totalPages = totalPages,
+                    currentPageRowCount = data?.Count ?? 0,
+                    hasData = data != null && data.Count > 0,
                     statistics = statistics,
-                    hasData = data.Count > 0,
-                    message = data.Count > 0 ? $"Sayfa {page} - {data.Count} kayýt gösteriliyor" : "Bu sayfada gösterilecek veri bulunamadý"
-                });
+                    pagination = new
+                    {
+                        currentPage = page,
+                        pageSize = pageSize,
+                        totalPages = totalPages,
+                        totalRows = totalRowsForPagination,
+                        hasNext = page < totalPages,
+                        hasPrevious = page > 1
+                    },
+                    message = data != null && data.Count > 0 
+                        ? $"Sayfa {page}/{totalPages} - {data.Count} kayýt gösteriliyor" 
+                        : "Bu sayfada gösterilecek veri bulunamadý"
+                };
+
+                _logger.LogInformation("Response hazýrlandý: TotalRows={TotalRows}, PageCount={PageCount}", 
+                    totalRowsForPagination, data?.Count ?? 0);
+
+                return Ok(response);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Excel verileri getirilirken hata: {FileName}, Sheet: {SheetName}", fileName, sheetName);
+                _logger.LogError(ex, "Excel verileri getirilirken hata: {FileName}, Sheet: {SheetName}, Page: {Page}", fileName, sheetName, page);
                 return StatusCode(500, new { 
                     success = false, 
                     message = "Veriler getirilirken bir hata oluþtu: " + ex.Message,
                     fileName = fileName,
-                    sheetName = sheetName
+                    sheetName = sheetName,
+                    page = page,
+                    error = new
+                    {
+                        type = ex.GetType().Name,
+                        message = ex.Message,
+                        stackTrace = ex.StackTrace
+                    }
                 });
             }
         }
 
         /// <summary>
-        /// Dosyadan tüm verileri getirme (sayfalama olmadan)
+        /// Dosyadan tüm verileri getirme (sayfalama olmadan) - ÝYÝLEÞTÝRÝLDÝ
         /// </summary>
         [HttpGet("data/{fileName}/all")]
         public async Task<IActionResult> GetAllExcelData(string fileName, [FromQuery] string? sheetName = null)
@@ -449,7 +492,7 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
-                _logger.LogInformation("Tüm veriler getirilmeye çalýþýlýyor: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
+                _logger.LogInformation("GetAllExcelData çaðrýldý: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
 
                 // Önce dosyanýn var olup olmadýðýný kontrol et
                 var fileExists = await _context.ExcelFiles
@@ -465,7 +508,7 @@ namespace ExcelDataManagementAPI.Controllers
                         fileName = fileName,
                         availableFiles = await _context.ExcelFiles
                             .Where(f => f.IsActive)
-                            .Select(f => f.FileName)
+                            .Select(f => new { f.FileName, f.OriginalFileName })
                             .ToListAsync()
                     });
                 }
@@ -473,8 +516,11 @@ namespace ExcelDataManagementAPI.Controllers
                 var data = await _excelService.GetAllExcelDataAsync(fileName, sheetName);
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
 
+                // Debug bilgisi
+                _logger.LogInformation("Service'den dönen tüm veri sayýsý: {Count}", data?.Count ?? 0);
+
                 // Eðer veri yoksa detaylý bilgi ver
-                if (data.Count == 0)
+                if (data == null || data.Count == 0)
                 {
                     var totalDataCount = await _context.ExcelDataRows
                         .Where(r => r.FileName == fileName && !r.IsDeleted)
@@ -528,116 +574,281 @@ namespace ExcelDataManagementAPI.Controllers
                 
                 return Ok(new { 
                     success = true, 
-                    data = data, 
+                    data = data ?? new List<ExcelDataResponseDto>(), 
                     fileName = fileName,
                     sheetName = sheetName,
-                    totalRows = data.Count,
+                    totalRows = data?.Count ?? 0,
                     statistics = statistics,
-                    hasData = data.Count > 0,
-                    message = data.Count > 0 ? $"Toplam {data.Count} kayýt getirildi" : "Bu dosya/sayfa için veri bulunamadý"
+                    hasData = data != null && data.Count > 0,
+                    message = data != null && data.Count > 0 ? $"Toplam {data.Count} kayýt getirildi" : "Bu dosya/sayfa için veri bulunamadý"
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Excel verileri getirilirken hata: {FileName}, Sheet: {SheetName}", fileName, sheetName);
+                _logger.LogError(ex, "Tüm Excel verileri getirilirken hata: {FileName}, Sheet: {SheetName}", fileName, sheetName);
                 return StatusCode(500, new { 
                     success = false, 
                     message = "Veriler getirilirken bir hata oluþtu: " + ex.Message,
                     fileName = fileName,
-                    sheetName = sheetName
+                    sheetName = sheetName,
+                    error = new
+                    {
+                        type = ex.GetType().Name,
+                        message = ex.Message,
+                        stackTrace = ex.StackTrace
+                    }
                 });
             }
         }
 
         /// <summary>
-        /// Excel verisini güncelleme
+        /// Excel verisini güncelleme - ÝYÝLEÞTÝRÝLDÝ
         /// </summary>
         [HttpPut("data")]
         public async Task<IActionResult> UpdateExcelData([FromBody] ExcelDataUpdateDto updateDto)
         {
             try
             {
+                if (updateDto == null || updateDto.Id <= 0)
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Geçersiz güncelleme verisi. ID zorunludur." 
+                    });
+                }
+
+                if (updateDto.Data == null || !updateDto.Data.Any())
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Güncellenecek veri boþ olamaz." 
+                    });
+                }
+
+                _logger.LogInformation("UpdateExcelData çaðrýldý: Id={Id}, DataCount={DataCount}", 
+                    updateDto.Id, updateDto.Data?.Count ?? 0);
+
                 var result = await _excelService.UpdateExcelDataAsync(updateDto);
-                return Ok(new { success = true, data = result });
+                
+                return Ok(new { 
+                    success = true, 
+                    data = result,
+                    message = "Veri baþarýyla güncellendi"
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Veri güncellenirken hata: {Id}", updateDto.Id);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                _logger.LogError(ex, "Veri güncellenirken hata: {Id}", updateDto?.Id);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Veri güncellenirken hata oluþtu: " + ex.Message,
+                    error = new
+                    {
+                        type = ex.GetType().Name,
+                        message = ex.Message
+                    }
+                });
             }
         }
 
         /// <summary>
-        /// Toplu Excel verisini güncelleme
+        /// Toplu Excel verisini güncelleme - ÝYÝLEÞTÝRÝLDÝ
         /// </summary>
         [HttpPut("data/bulk")]
         public async Task<IActionResult> BulkUpdateExcelData([FromBody] BulkUpdateDto bulkUpdateDto)
         {
             try
             {
+                if (bulkUpdateDto == null || bulkUpdateDto.Updates == null || !bulkUpdateDto.Updates.Any())
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Toplu güncelleme için en az bir güncelleme verisi gerekli." 
+                    });
+                }
+
+                _logger.LogInformation("BulkUpdateExcelData çaðrýldý: UpdateCount={Count}", bulkUpdateDto.Updates.Count);
+
                 var results = await _excelService.BulkUpdateExcelDataAsync(bulkUpdateDto);
-                return Ok(new { success = true, data = results, count = results.Count });
+                
+                return Ok(new { 
+                    success = true, 
+                    data = results, 
+                    count = results.Count,
+                    message = $"{results.Count} kayýt baþarýyla güncellendi"
+                });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Toplu veri güncellenirken hata");
-                return StatusCode(500, new { success = false, message = ex.Message });
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Toplu veri güncellenirken hata oluþtu: " + ex.Message,
+                    error = new
+                    {
+                        type = ex.GetType().Name,
+                        message = ex.Message
+                    }
+                });
             }
         }
 
         /// <summary>
-        /// Yeni bir satýr ekleme
+        /// Yeni bir satýr ekleme - ÝYÝLEÞTÝRÝLDÝ
         /// </summary>
         [HttpPost("data")]
         public async Task<IActionResult> AddExcelRow([FromBody] AddRowRequestDto addRowDto)
         {
             try
             {
+                if (addRowDto == null)
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Satýr ekleme verisi gerekli." 
+                    });
+                }
+
+                if (string.IsNullOrEmpty(addRowDto.FileName))
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Dosya adý zorunludur." 
+                    });
+                }
+
+                if (string.IsNullOrEmpty(addRowDto.SheetName))
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Sheet adý zorunludur." 
+                    });
+                }
+
+                if (addRowDto.RowData == null || !addRowDto.RowData.Any())
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Satýr verisi boþ olamaz." 
+                    });
+                }
+
+                _logger.LogInformation("AddExcelRow çaðrýldý: FileName={FileName}, SheetName={SheetName}, DataCount={DataCount}", 
+                    addRowDto.FileName, addRowDto.SheetName, addRowDto.RowData?.Count ?? 0);
+
                 var result = await _excelService.AddExcelRowAsync(addRowDto.FileName, addRowDto.SheetName, addRowDto.RowData, addRowDto.AddedBy);
-                return Ok(new { success = true, data = result });
+                
+                return Ok(new { 
+                    success = true, 
+                    data = result,
+                    message = "Yeni satýr baþarýyla eklendi"
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Yeni satýr eklenirken hata: {FileName}", addRowDto.FileName);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                _logger.LogError(ex, "Yeni satýr eklenirken hata: {FileName}", addRowDto?.FileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Yeni satýr eklenirken hata oluþtu: " + ex.Message,
+                    error = new
+                    {
+                        type = ex.GetType().Name,
+                        message = ex.Message
+                    }
+                });
             }
         }
 
         /// <summary>
-        /// Veri silme
+        /// Veri silme - ÝYÝLEÞTÝRÝLDÝ
         /// </summary>
         [HttpDelete("data/{id}")]
         public async Task<IActionResult> DeleteExcelData(int id, [FromQuery] string? deletedBy = null)
         {
             try
             {
+                if (id <= 0)
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Geçerli bir ID gerekli." 
+                    });
+                }
+
+                _logger.LogInformation("DeleteExcelData çaðrýldý: Id={Id}, DeletedBy={DeletedBy}", id, deletedBy);
+
                 var result = await _excelService.DeleteExcelDataAsync(id, deletedBy);
-                return Ok(new { success = result, message = result ? "Veri silindi" : "Veri bulunamadý" });
+                
+                return Ok(new { 
+                    success = result, 
+                    message = result ? "Veri baþarýyla silindi" : "Veri bulunamadý",
+                    id = id
+                });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Veri silinirken hata: {Id}", id);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Veri silinirken hata oluþtu: " + ex.Message,
+                    id = id,
+                    error = new
+                    {
+                        type = ex.GetType().Name,
+                        message = ex.Message
+                    }
+                });
             }
         }
 
         /// <summary>
-        /// Excel verilerini belirtilen kritere göre dýþa aktarma
+        /// Excel verilerini belirtilen kritere göre dýþa aktarma - ÝYÝLEÞTÝRÝLDÝ
         /// </summary>
         [HttpPost("export")]
         public async Task<IActionResult> ExportToExcel([FromBody] ExcelExportRequestDto exportRequest)
         {
             try
             {
+                if (exportRequest == null || string.IsNullOrEmpty(exportRequest.FileName))
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Export için dosya adý gerekli." 
+                    });
+                }
+
+                _logger.LogInformation("Excel export isteði alýndý: {FileName}, Sheet: {Sheet}, RowIds: {RowIdCount}, IncludeHistory: {IncludeHistory}", 
+                    exportRequest.FileName, exportRequest.SheetName, exportRequest.RowIds?.Count ?? 0, exportRequest.IncludeModificationHistory);
+
                 var fileBytes = await _excelService.ExportToExcelAsync(exportRequest);
+                
+                if (fileBytes == null || fileBytes.Length == 0)
+                {
+                    return StatusCode(500, new { 
+                        success = false, 
+                        message = "Excel dosyasý oluþturulamadý" 
+                    });
+                }
+
                 var fileName = $"{exportRequest.FileName}_export_{DateTime.Now:yyyyMMddHHmmss}.xlsx";
                 
+                _logger.LogInformation("Excel export baþarýlý: {FileName}, {FileSize} bytes", fileName, fileBytes.Length);
+
                 return File(fileBytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Excel export edilirken hata: {FileName}", exportRequest.FileName);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                _logger.LogError(ex, "Excel export edilirken hata: {FileName}", exportRequest?.FileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Excel export edilirken hata oluþtu: " + ex.Message,
+                    fileName = exportRequest?.FileName,
+                    error = new
+                    {
+                        type = ex.GetType().Name,
+                        message = ex.Message
+                    }
+                });
             }
         }
 
@@ -652,18 +863,31 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
+                if (string.IsNullOrEmpty(fileName))
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Dosya adý gerekli." 
+                    });
+                }
+
                 var sheets = await _excelService.GetSheetsAsync(fileName);
                 return Ok(new { 
                     success = true, 
                     data = sheets,
                     fileName = fileName,
-                    message = "Dosyadaki sheet'ler"
+                    count = sheets.Count,
+                    message = "Dosyadaki sheet'ler baþarýyla getirildi"
                 });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Sheet'ler getirilirken hata: {FileName}", fileName);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Sheet'ler getirilirken hata oluþtu: " + ex.Message,
+                    fileName = fileName
+                });
             }
         }
 
@@ -678,13 +902,31 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
+                if (string.IsNullOrEmpty(fileName))
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Dosya adý gerekli." 
+                    });
+                }
+
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
-                return Ok(new { success = true, data = statistics });
+                return Ok(new { 
+                    success = true, 
+                    data = statistics,
+                    fileName = fileName,
+                    sheetName = sheetName,
+                    message = "Ýstatistikler baþarýyla getirildi"
+                });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Ýstatistikler getirilirken hata: {FileName}", fileName);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = "Ýstatistikler getirilirken hata oluþtu: " + ex.Message,
+                    fileName = fileName
+                });
             }
         }
 
@@ -699,6 +941,14 @@ namespace ExcelDataManagementAPI.Controllers
                 // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
+                if (string.IsNullOrEmpty(fileName))
+                {
+                    return BadRequest(new { 
+                        success = false, 
+                        message = "Dosya adý gerekli." 
+                    });
+                }
+
                 var result = await _excelService.DeleteExcelFileAsync(fileName, deletedBy);
                 if (result)
                 {
@@ -722,7 +972,7 @@ namespace ExcelDataManagementAPI.Controllers
                 _logger.LogError(ex, "Dosya silinirken hata: {FileName}", fileName);
                 return StatusCode(500, new { 
                     success = false, 
-                    message = ex.Message,
+                    message = "Dosya silinirken hata oluþtu: " + ex.Message,
                     fileName = fileName
                 });
             }
@@ -842,293 +1092,5 @@ namespace ExcelDataManagementAPI.Controllers
         {
             return Ok(new { success = true, message = "Debug test baþarýlý" });
         }
-
-        /// <summary>
-        /// Debug endpoint - Belirli dosya için veri sorgusu test etme
-        /// </summary>
-        [HttpGet("debug/test-data-query/{fileName}")]
-        public async Task<IActionResult> TestDataQuery(string fileName, [FromQuery] string? sheetName = null)
-        {
-            try
-            {
-                // URL decode iþlemi
-                fileName = Uri.UnescapeDataString(fileName);
-
-                _logger.LogInformation("Test data query baþlatýldý: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
-
-                // 1. Dosya kontrolü
-                var file = await _context.ExcelFiles
-                    .FirstOrDefaultAsync(f => f.FileName == fileName);
-
-                var fileInfo = new
-                {
-                    exists = file != null,
-                    isActive = file?.IsActive ?? false,
-                    fileName = file?.FileName,
-                    originalFileName = file?.OriginalFileName,
-                    uploadDate = file?.UploadDate,
-                    physicalFileExists = file != null && !string.IsNullOrEmpty(file.FilePath) && System.IO.File.Exists(file.FilePath)
-                };
-
-                // 2. Veri kontrolü
-                var baseQuery = _context.ExcelDataRows
-                    .Where(r => r.FileName == fileName);
-
-                var allDataCount = await baseQuery.CountAsync();
-                var activeDataCount = await baseQuery.Where(r => !r.IsDeleted).CountAsync();
-                var deletedDataCount = await baseQuery.Where(r => r.IsDeleted).CountAsync();
-
-                var dataInfo = new
-                {
-                    totalDataRows = allDataCount,
-                    activeDataRows = activeDataCount,
-                    deletedDataRows = deletedDataCount
-                };
-
-                // 3. Sheet kontrolü
-                var allSheets = await baseQuery
-                    .Where(r => !r.IsDeleted)
-                    .Select(r => r.SheetName)
-                    .Distinct()
-                    .ToListAsync();
-
-                var sheetInfo = new
-                {
-                    requestedSheet = sheetName,
-                    availableSheets = allSheets,
-                    requestedSheetExists = !string.IsNullOrEmpty(sheetName) && allSheets.Contains(sheetName),
-                    sheetDataCount = !string.IsNullOrEmpty(sheetName) 
-                        ? await baseQuery.Where(r => r.SheetName == sheetName && !r.IsDeleted).CountAsync()
-                        : 0
-                };
-
-                // 4. Sample data
-                var sampleData = await baseQuery
-                    .Where(r => !r.IsDeleted)
-                    .Take(3)
-                    .Select(r => new
-                    {
-                        r.Id,
-                        r.FileName,
-                        r.SheetName,
-                        r.RowIndex,
-                        r.CreatedDate,
-                        r.IsDeleted,
-                        DataPreview = r.RowData.Substring(0, Math.Min(r.RowData.Length, 100)) + (r.RowData.Length > 100 ? "..." : "")
-                    })
-                    .ToListAsync();
-
-                return Ok(new
-                {
-                    success = true,
-                    testResults = new
-                    {
-                        queryParameters = new { fileName, sheetName },
-                        fileInfo,
-                        dataInfo,
-                        sheetInfo,
-                        sampleData,
-                        diagnosis = GetDiagnosis(fileInfo, dataInfo, sheetInfo)
-                    },
-                    message = "Test sorgusu tamamlandý"
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Test data query'de hata: {FileName}", fileName);
-                return StatusCode(500, new { 
-                    success = false, 
-                    message = ex.Message,
-                    fileName = fileName,
-                    sheetName = sheetName
-                });
-            }
-        }
-
-        /// <summary>
-        /// Debug endpoint - Veri akýþýný test etme
-        /// </summary>
-        [HttpGet("debug/data-flow-test/{fileName}")]
-        public async Task<IActionResult> TestDataFlow(string fileName, [FromQuery] string? sheetName = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
-        {
-            try
-            {
-                // URL decode iþlemi
-                fileName = Uri.UnescapeDataString(fileName);
-
-                var steps = new List<object>();
-
-                // Adým 1: Dosya kontrolü
-                var fileCheck = await _context.ExcelFiles
-                    .FirstOrDefaultAsync(f => f.FileName == fileName && f.IsActive);
-
-                steps.Add(new
-                {
-                    step = 1,
-                    description = "Dosya kontrolü",
-                    success = fileCheck != null,
-                    result = fileCheck != null ? new { fileCheck.FileName, fileCheck.OriginalFileName, fileCheck.IsActive } : null
-                });
-
-                if (fileCheck == null)
-                {
-                    return Ok(new { success = false, steps, message = "Dosya bulunamadý" });
-                }
-
-                // Adým 2: Veri sayýsý kontrolü
-                var dataCount = await _context.ExcelDataRows
-                    .Where(r => r.FileName == fileName && !r.IsDeleted)
-                    .CountAsync();
-
-                steps.Add(new
-                {
-                    step = 2,
-                    description = "Aktif veri sayýsý kontrolü",
-                    success = dataCount > 0,
-                    result = new { dataCount }
-                });
-
-                // Adým 3: Sheet kontrolü (eðer belirtildiyse)
-                if (!string.IsNullOrEmpty(sheetName))
-                {
-                    var sheetDataCount = await _context.ExcelDataRows
-                        .Where(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted)
-                        .CountAsync();
-
-                    steps.Add(new
-                    {
-                        step = 3,
-                        description = $"Sheet '{sheetName}' veri kontrolü",
-                        success = sheetDataCount > 0,
-                        result = new { sheetName, sheetDataCount }
-                    });
-                }
-
-                // Adým 4: Service metodunu test et
-                try
-                {
-                    var serviceResult = await _excelService.GetExcelDataAsync(fileName, sheetName, page, pageSize);
-                    steps.Add(new
-                    {
-                        step = 4,
-                        description = "ExcelService.GetExcelDataAsync çaðrýsý",
-                        success = true,
-                        result = new { returnedCount = serviceResult.Count, hasData = serviceResult.Any() }
-                    });
-
-                    // Adým 5: Ýlk kayýtlarýn örneði
-                    if (serviceResult.Any())
-                    {
-                        var sample = serviceResult.Take(2).Select(r => new
-                        {
-                            r.Id,
-                            r.FileName,
-                            r.SheetName,
-                            r.RowIndex,
-                            ColumnCount = r.Data?.Count ?? 0,
-                            FirstColumns = r.Data?.Take(3).ToDictionary(kvp => kvp.Key, kvp => kvp.Value) ?? new Dictionary<string, string>()
-                        });
-
-                        steps.Add(new
-                        {
-                            step = 5,
-                            description = "Veri örnekleri",
-                            success = true,
-                            result = sample
-                        });
-                    }
-
-                    return Ok(new
-                    {
-                        success = true,
-                        steps,
-                        finalResult = new
-                        {
-                            fileName,
-                            sheetName,
-                            page,
-                            pageSize,
-                            resultCount = serviceResult.Count,
-                            hasData = serviceResult.Any()
-                        },
-                        message = "Veri akýþ testi tamamlandý"
-                    });
-                }
-                catch (Exception serviceEx)
-                {
-                    steps.Add(new
-                    {
-                        step = 4,
-                        description = "ExcelService.GetExcelDataAsync çaðrýsý",
-                        success = false,
-                        error = serviceEx.Message
-                    });
-
-                    return Ok(new { success = false, steps, message = "Service katmanýnda hata" });
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Data flow test'te hata: {FileName}", fileName);
-                return StatusCode(500, new { 
-                    success = false, 
-                    message = ex.Message,
-                    fileName = fileName
-                });
-            }
-        }
-
-        private object GetDiagnosis(dynamic fileInfo, dynamic dataInfo, dynamic sheetInfo)
-        {
-            var issues = new List<string>();
-            var recommendations = new List<string>();
-
-            if (!fileInfo.exists)
-            {
-                issues.Add("Dosya veritabanýnda bulunamadý");
-                recommendations.Add("Dosyayý yeniden yükleyin");
-            }
-            else if (!fileInfo.isActive)
-            {
-                issues.Add("Dosya aktif deðil");
-                recommendations.Add("Dosya silinmiþ olabilir, yeniden yükleyin");
-            }
-            else if (!fileInfo.physicalFileExists)
-            {
-                issues.Add("Fiziksel dosya bulunamadý");
-                recommendations.Add("Dosya sistemi dosyasý silinmiþ, yeniden yükleyin");
-            }
-            else if (dataInfo.activeDataRows == 0)
-            {
-                if (dataInfo.totalDataRows == 0)
-                {
-                    issues.Add("Dosya hiç okunmamýþ");
-                    recommendations.Add("POST /api/excel/read/{fileName} endpoint'ini kullanarak dosyayý okuyun");
-                }
-                else
-                {
-                    issues.Add("Tüm veriler silinmiþ durumda");
-                    recommendations.Add("Dosyayý yeniden okuyun");
-                }
-            }
-            else if (!string.IsNullOrEmpty((string)sheetInfo.requestedSheet) && !sheetInfo.requestedSheetExists)
-            {
-                issues.Add($"Ýstenen sheet '{sheetInfo.requestedSheet}' bulunamadý");
-                recommendations.Add($"Mevcut sheet'lerden birini kullanýn: {string.Join(", ", sheetInfo.availableSheets)}");
-            }
-            else if (!string.IsNullOrEmpty((string)sheetInfo.requestedSheet) && sheetInfo.sheetDataCount == 0)
-            {
-                issues.Add($"Ýstenen sheet '{sheetInfo.requestedSheet}' var ama veri yok");
-                recommendations.Add("Dosyayý yeniden okuyun veya baþka bir sheet seçin");
-            }
-
-            if (issues.Count == 0)
-            {
-                issues.Add("Belirgin bir sorun tespit edilmedi");
-                recommendations.Add("Frontend'deki parametreleri kontrol edin");
-            }
-
-            return new { issues, recommendations };
-        }
-     }
+    }
 }
