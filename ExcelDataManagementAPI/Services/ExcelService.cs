@@ -28,8 +28,28 @@ namespace ExcelDataManagementAPI.Services
                 var uploadsPath = Path.Combine(_environment.ContentRootPath, "uploads");
                 Directory.CreateDirectory(uploadsPath);
 
-                var fileName = $"{Path.GetFileNameWithoutExtension(file.FileName)}_{DateTime.Now:yyyyMMddHHmmss}{Path.GetExtension(file.FileName)}";
+                // Orijinal dosya adýndan güvenli bir ad oluþtur
+                var originalFileNameWithoutExtension = Path.GetFileNameWithoutExtension(file.FileName);
+                var originalExtension = Path.GetExtension(file.FileName);
+                
+                // Dosya adýný temizle - güvenlik için
+                var cleanFileName = string.Join("_", originalFileNameWithoutExtension.Split(Path.GetInvalidFileNameChars()));
+                
+                // Benzersiz dosya adý oluþtur
+                var timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
+                var fileName = $"{cleanFileName}_{timestamp}{originalExtension}";
+                
+                // Dosya adýnýn çok uzun olmamasýný saðla
+                if (fileName.Length > 200)
+                {
+                    cleanFileName = cleanFileName.Substring(0, Math.Min(cleanFileName.Length, 150));
+                    fileName = $"{cleanFileName}_{timestamp}{originalExtension}";
+                }
+
                 var filePath = Path.Combine(uploadsPath, fileName);
+
+                _logger.LogInformation("Dosya yükleniyor: Original={OriginalName}, Generated={GeneratedName}, Path={FilePath}", 
+                    file.FileName, fileName, filePath);
 
                 using (var stream = new FileStream(filePath, FileMode.Create))
                 {
@@ -50,11 +70,13 @@ namespace ExcelDataManagementAPI.Services
                 _context.ExcelFiles.Add(excelFile);
                 await _context.SaveChangesAsync();
 
+                _logger.LogInformation("Dosya baþarýyla yüklendi: {FileName} -> {GeneratedFileName}", file.FileName, fileName);
+
                 return excelFile;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Dosya yükleme hatasý");
+                _logger.LogError(ex, "Dosya yükleme hatasý: {FileName}", file.FileName);
                 throw;
             }
         }
@@ -73,13 +95,30 @@ namespace ExcelDataManagementAPI.Services
             {
                 _logger.LogInformation("ReadExcelDataAsync baþlatýldý: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
 
+                // Input validation
+                if (string.IsNullOrEmpty(fileName))
+                {
+                    throw new ArgumentException("Dosya adý boþ olamaz");
+                }
+
+                // Dosyayý veritabanýndan bul
                 var excelFile = await _context.ExcelFiles.FirstOrDefaultAsync(f => f.FileName == fileName && f.IsActive);
                 if (excelFile == null)
+                {
+                    _logger.LogError("Dosya veritabanýnda bulunamadý: {FileName}", fileName);
                     throw new FileNotFoundException($"Dosya bulunamadý: {fileName}");
+                }
 
                 // Fiziksel dosya kontrolü
-                if (!File.Exists(excelFile.FilePath))
+                if (string.IsNullOrEmpty(excelFile.FilePath) || !File.Exists(excelFile.FilePath))
+                {
+                    _logger.LogError("Fiziksel dosya bulunamadý. DbPath: {DbPath}, Exists: {Exists}", 
+                        excelFile.FilePath, !string.IsNullOrEmpty(excelFile.FilePath) && File.Exists(excelFile.FilePath));
                     throw new FileNotFoundException($"Fiziksel dosya bulunamadý: {excelFile.FilePath}");
+                }
+
+                _logger.LogInformation("Dosya bulundu: DbFileName={DbFileName}, OriginalName={OriginalName}, FilePath={FilePath}", 
+                    excelFile.FileName, excelFile.OriginalFileName, excelFile.FilePath);
 
                 // Önceki verileri temizle (yeniden okuma durumunda)
                 var existingData = await _context.ExcelDataRows
@@ -95,6 +134,7 @@ namespace ExcelDataManagementAPI.Services
 
                 var results = new List<ExcelDataResponseDto>();
 
+                // Excel dosyasýný aç
                 using var package = new ExcelPackage(new FileInfo(excelFile.FilePath));
                 
                 if (package.Workbook.Worksheets.Count == 0)
@@ -103,6 +143,7 @@ namespace ExcelDataManagementAPI.Services
                     throw new Exception("Excel dosyasýnda hiç worksheet bulunamadý");
                 }
 
+                // Worksheet seç
                 var worksheet = sheetName != null 
                     ? package.Workbook.Worksheets.FirstOrDefault(ws => ws.Name == sheetName)
                     : package.Workbook.Worksheets.FirstOrDefault();
@@ -110,7 +151,9 @@ namespace ExcelDataManagementAPI.Services
                 if (worksheet == null)
                 {
                     var availableSheets = package.Workbook.Worksheets.Select(ws => ws.Name).ToList();
-                    throw new Exception($"Sheet bulunamadý: {sheetName ?? "Ýlk sheet"}. Mevcut sheet'ler: {string.Join(", ", availableSheets)}");
+                    var errorMessage = $"Sheet bulunamadý: {sheetName ?? "Ýlk sheet"}. Mevcut sheet'ler: {string.Join(", ", availableSheets)}";
+                    _logger.LogError(errorMessage);
+                    throw new Exception(errorMessage);
                 }
 
                 _logger.LogInformation("Worksheet seçildi: {WorksheetName}, Dimensions: {Dimensions}", worksheet.Name, worksheet.Dimension?.Address);
@@ -219,6 +262,11 @@ namespace ExcelDataManagementAPI.Services
                     fileName, worksheet.Name, processedRowCount, skippedRowCount);
 
                 return results;
+            }
+            catch (FileNotFoundException fnfEx)
+            {
+                _logger.LogError(fnfEx, "Dosya bulunamadý hatasý: {FileName}, SheetName: {SheetName}", fileName, sheetName);
+                throw;
             }
             catch (Exception ex)
             {

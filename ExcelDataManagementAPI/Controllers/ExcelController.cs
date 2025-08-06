@@ -165,24 +165,40 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
+                _logger.LogInformation("Dosya yükleniyor: OriginalName={OriginalName}, Size={Size}", file.FileName, file.Length);
+
                 var result = await _excelService.UploadExcelFileAsync(file, uploadedBy);
+                
+                _logger.LogInformation("Dosya yüklendi: OriginalName={OriginalName} -> GeneratedName={GeneratedName}", 
+                    result.OriginalFileName, result.FileName);
                 
                 return Ok(new { 
                     success = true, 
                     data = result,
+                    // Frontend için hem gerçek hem orijinal dosya adýný ver
+                    fileName = result.FileName,
+                    originalFileName = result.OriginalFileName,
                     message = "Dosya baþarýyla yüklendi! Þimdi iþlem yapmak için dosyayý kullanabilirsiniz.",
                     nextSteps = new 
                     {
+                        // Gerçek dosya adýný kullan
                         readData = $"/api/excel/read/{result.FileName}",
                         getData = $"/api/excel/data/{result.FileName}",
-                        getSheets = $"/api/excel/sheets/{result.FileName}"
+                        getSheets = $"/api/excel/sheets/{result.FileName}",
+                        // Debug endpoint'leri
+                        checkStatus = $"/api/excel/files/{result.FileName}/status",
+                        recentUploads = "/api/excel/debug/recent-uploads"
                     }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Dosya yüklenirken hata");
-                return StatusCode(500, new { success = false, message = ex.Message });
+                _logger.LogError(ex, "Dosya yüklenirken hata: {FileName}", file?.FileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message,
+                    originalFileName = file?.FileName
+                });
             }
         }
 
@@ -216,11 +232,19 @@ namespace ExcelDataManagementAPI.Controllers
                 // SheetName'i normalize et - "undefined" ise null yap
                 var normalizedSheetName = NormalizeSheetName(request.SheetName);
 
+                _logger.LogInformation("ReadFromFile baþlatýldý: OriginalName={OriginalName}, Sheet={Sheet}", 
+                    request.ExcelFile.FileName, normalizedSheetName);
+
                 // Önce dosyayý yükle
                 var uploadedFile = await _excelService.UploadExcelFileAsync(request.ExcelFile, request.ProcessedBy);
                 
+                _logger.LogInformation("Dosya yüklendi: {OriginalName} -> {GeneratedName}", 
+                    uploadedFile.OriginalFileName, uploadedFile.FileName);
+
                 // Sonra oku
                 var data = await _excelService.ReadExcelDataAsync(uploadedFile.FileName, normalizedSheetName);
+                
+                _logger.LogInformation("Dosya okundu: {Count} satýr", data.Count);
                 
                 return Ok(new { 
                     success = true, 
@@ -229,13 +253,23 @@ namespace ExcelDataManagementAPI.Controllers
                     originalFileName = uploadedFile.OriginalFileName,
                     sheetName = normalizedSheetName,
                     totalRows = data.Count,
-                    message = "Excel dosyasý baþarýyla okundu ve veritabanýna aktarýldý"
+                    message = "Excel dosyasý baþarýyla okundu ve veritabanýna aktarýldý",
+                    debug = new
+                    {
+                        uploadedFileName = uploadedFile.FileName,
+                        originalFileName = uploadedFile.OriginalFileName,
+                        processedSheet = normalizedSheetName
+                    }
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Dosya okunurken hata");
-                return StatusCode(500, new { success = false, message = ex.Message });
+                _logger.LogError(ex, "Dosya okunurken hata: {FileName}", request?.ExcelFile?.FileName);
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message,
+                    originalFileName = request?.ExcelFile?.FileName
+                });
             }
         }
 
@@ -311,7 +345,62 @@ namespace ExcelDataManagementAPI.Controllers
                 
                 // SheetName'i normalize et - "undefined" ise null yap
                 var normalizedSheetName = NormalizeSheetName(sheetName);
-                
+
+                _logger.LogInformation("ReadExcelData çaðrýldý: FileName={FileName}, SheetName={SheetName}", fileName, normalizedSheetName);
+
+                // Önce tam eþleþme ara
+                var exactMatch = await _context.ExcelFiles
+                    .FirstOrDefaultAsync(f => f.FileName == fileName && f.IsActive);
+
+                if (exactMatch == null)
+                {
+                    // Tam eþleþme yoksa, orijinal dosya adýyla ara
+                    var originalMatch = await _context.ExcelFiles
+                        .FirstOrDefaultAsync(f => f.OriginalFileName == fileName && f.IsActive);
+
+                    if (originalMatch != null)
+                    {
+                        _logger.LogInformation("Orijinal dosya adýyla eþleþme bulundu: {OriginalName} -> {FileName}", fileName, originalMatch.FileName);
+                        fileName = originalMatch.FileName; // Gerçek dosya adýný kullan
+                    }
+                    else
+                    {
+                        // Partial match dene (dosya adý uzantýsý olmadan)
+                        var fileNameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
+                        var partialMatch = await _context.ExcelFiles
+                            .Where(f => f.IsActive && 
+                                       (f.FileName.Contains(fileNameWithoutExt) || 
+                                        f.OriginalFileName.Contains(fileNameWithoutExt)))
+                            .OrderByDescending(f => f.UploadDate)
+                            .FirstOrDefaultAsync();
+
+                        if (partialMatch != null)
+                        {
+                            _logger.LogInformation("Kýsmi eþleþme bulundu: {RequestedName} -> {FileName}", fileName, partialMatch.FileName);
+                            fileName = partialMatch.FileName; // Gerçek dosya adýný kullan
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Dosya bulunamadý: {RequestedFileName}", fileName);
+                            
+                            var availableFiles = await _context.ExcelFiles
+                                .Where(f => f.IsActive)
+                                .Select(f => new { f.FileName, f.OriginalFileName, f.UploadDate })
+                                .OrderByDescending(f => f.UploadDate)
+                                .ToListAsync();
+
+                            return NotFound(new
+                            {
+                                success = false,
+                                message = $"Dosya bulunamadý: {fileName}",
+                                requestedFileName = fileName,
+                                availableFiles = availableFiles,
+                                suggestion = "Lütfen mevcut dosyalardan birini seçin veya dosyayý yeniden yükleyin"
+                            });
+                        }
+                    }
+                }
+
                 var data = await _excelService.ReadExcelDataAsync(fileName, normalizedSheetName);
                 return Ok(new { 
                     success = true, 
@@ -325,7 +414,11 @@ namespace ExcelDataManagementAPI.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Excel dosyasý okunurken hata: {FileName}", fileName);
-                return StatusCode(500, new { success = false, message = ex.Message });
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message,
+                    requestedFileName = fileName
+                });
             }
         }
 
@@ -586,7 +679,7 @@ namespace ExcelDataManagementAPI.Controllers
                         });
                     }
                 }
-                
+               
                 return Ok(new { 
                     success = true, 
                     data = data ?? new List<ExcelDataResponseDto>(), 
@@ -832,7 +925,7 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                _logger.LogInformation("Excel export isteði alýndý: {FileName}, Sheet: {Sheet}, RowIds: {RowIdCount}, IncludeHistory: {IncludeHistory}", 
+                _logger.LogInformation("Excel export isteði alýndý: {FileName}, Sheet: {Sheet}, RowIds: {RowIdCount}, IncludeHistory: {IncludeModificationHistory}", 
                     exportRequest.FileName, exportRequest.SheetName, exportRequest.RowIds?.Count ?? 0, exportRequest.IncludeModificationHistory);
 
                 var fileBytes = await _excelService.ExportToExcelAsync(exportRequest);
@@ -1109,6 +1202,169 @@ namespace ExcelDataManagementAPI.Controllers
         public IActionResult DebugTest()
         {
             return Ok(new { success = true, message = "Debug test baþarýlý" });
+        }
+
+        /// <summary>
+        /// Debug endpoint - Dosya adý problemlerini tespit ve düzelt
+        /// </summary>
+        [HttpGet("debug/fix-filename-issues")]
+        public async Task<IActionResult> FixFilenameIssues()
+        {
+            try
+            {
+                var issues = new List<object>();
+                var fixes = new List<object>();
+
+                // Tüm dosyalarý kontrol et
+                var allFiles = await _context.ExcelFiles.ToListAsync();
+                
+                foreach (var file in allFiles)
+                {
+                    var fileIssues = new List<string>();
+                    var originalFileName = file.FileName;
+                    
+                    // Çift uzantý kontrolü
+                    if (file.FileName.EndsWith(".xlsx.xlsx") || file.FileName.EndsWith(".xls.xls"))
+                    {
+                        fileIssues.Add("Çift uzantý problemi");
+                        
+                        // Düzeltme yap
+                        var correctedName = file.FileName.Replace(".xlsx.xlsx", ".xlsx").Replace(".xls.xls", ".xls");
+                        
+                        // Fiziksel dosyayý yeniden adlandýr
+                        if (!string.IsNullOrEmpty(file.FilePath) && System.IO.File.Exists(file.FilePath))
+                        {
+                            var directory = Path.GetDirectoryName(file.FilePath);
+                            if (!string.IsNullOrEmpty(directory))
+                            {
+                                var newFilePath = Path.Combine(directory, correctedName);
+                                
+                                if (!System.IO.File.Exists(newFilePath))
+                                {
+                                    System.IO.File.Move(file.FilePath, newFilePath);
+                                    file.FilePath = newFilePath;
+                                    file.FileName = correctedName;
+                                    
+                                    fixes.Add(new
+                                    {
+                                        originalFileName = originalFileName,
+                                        correctedFileName = correctedName,
+                                        originalPath = file.FilePath,
+                                        correctedPath = newFilePath,
+                                        action = "Dosya yeniden adlandýrýldý"
+                                    });
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Sadece veritabanýnda düzelt
+                            file.FileName = correctedName;
+                            fixes.Add(new
+                            {
+                                originalFileName = originalFileName,
+                                correctedFileName = correctedName,
+                                action = "Sadece veritabanýnda düzeltildi (fiziksel dosya yok)"
+                            });
+                        }
+                    }
+                    
+                    // Fiziksel dosya var mý kontrolü
+                    if (!string.IsNullOrEmpty(file.FilePath) && !System.IO.File.Exists(file.FilePath))
+                    {
+                        fileIssues.Add("Fiziksel dosya bulunamadý");
+                    }
+                    
+                    // Dosya adýnda geçersiz karakterler var mý kontrolü
+                    var invalidChars = Path.GetInvalidFileNameChars();
+                    if (file.FileName.Any(c => invalidChars.Contains(c)))
+                    {
+                        fileIssues.Add("Geçersiz karakter içeriyor");
+                    }
+                    
+                    if (fileIssues.Any())
+                    {
+                        issues.Add(new
+                        {
+                            fileName = originalFileName,
+                            originalFileName = file.OriginalFileName,
+                            filePath = file.FilePath,
+                            isActive = file.IsActive,
+                            issues = fileIssues
+                        });
+                    }
+                }
+
+                // Deðiþiklikleri kaydet
+                if (fixes.Any())
+                {
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    summary = new
+                    {
+                        totalFiles = allFiles.Count,
+                        filesWithIssues = issues.Count,
+                        fixesApplied = fixes.Count
+                    },
+                    issues = issues,
+                    fixes = fixes,
+                    message = fixes.Any() ? $"{fixes.Count} dosya problemi düzeltildi" : "Hiçbir problem bulunamadý"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Dosya adý problemleri düzeltilirken hata");
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Debug endpoint - Son yüklenen dosyalarý listele
+        /// </summary>
+        [HttpGet("debug/recent-uploads")]
+        public async Task<IActionResult> GetRecentUploads()
+        {
+            try
+            {
+                var recentFiles = await _context.ExcelFiles
+                    .Where(f => f.IsActive)
+                    .OrderByDescending(f => f.UploadDate)
+                    .Take(10)
+                    .Select(f => new
+                    {
+                        f.FileName,
+                        f.OriginalFileName,
+                        f.UploadDate,
+                        f.FileSize,
+                        f.IsActive,
+                        PhysicalFileExists = !string.IsNullOrEmpty(f.FilePath) && System.IO.File.Exists(f.FilePath),
+                        f.FilePath,
+                        HasData = _context.ExcelDataRows.Any(r => r.FileName == f.FileName && !r.IsDeleted)
+                    })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    recentUploads = recentFiles,
+                    message = "Son yüklenen dosyalar"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Son yüklemeler alýnýrken hata");
+                return StatusCode(500, new { 
+                    success = false, 
+                    message = ex.Message
+                });
+            }
         }
 
         /// <summary>
