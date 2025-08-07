@@ -51,10 +51,23 @@ namespace ExcelDataManagementAPI
                 });
             });
 
-            // Veritabanı bağlantısı
+            // Veritabanı bağlantısı - SQLite for cross-platform compatibility, SQL Server for Windows
             builder.Services.AddDbContext<ExcelDataContext>(options =>
             {
-                options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+                var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+                
+                // Check if running on Windows and LocalDB is available
+                if (Environment.OSVersion.Platform == PlatformID.Win32NT && connectionString!.Contains("localdb"))
+                {
+                    options.UseSqlServer(connectionString);
+                }
+                else
+                {
+                    // Use SQLite for Linux/macOS or when LocalDB is not available
+                    var sqliteConnection = builder.Configuration.GetConnectionString("SqliteConnection") 
+                        ?? "Data Source=ExcelDataManagement.db";
+                    options.UseSqlite(sqliteConnection);
+                }
             });
 
             // Dependency Injection

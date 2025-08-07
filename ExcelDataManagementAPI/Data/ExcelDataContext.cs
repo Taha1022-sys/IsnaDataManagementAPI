@@ -31,7 +31,18 @@ namespace ExcelDataManagementAPI.Data
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.FileName).IsRequired().HasMaxLength(255);
                 entity.Property(e => e.SheetName).IsRequired().HasMaxLength(255);
-                entity.Property(e => e.RowData).IsRequired().HasColumnType("nvarchar(max)");
+                
+                // Handle column type based on database provider
+                var provider = Database.ProviderName;
+                if (provider?.Contains("Sqlite") == true)
+                {
+                    entity.Property(e => e.RowData).IsRequired().HasColumnType("TEXT");
+                }
+                else
+                {
+                    entity.Property(e => e.RowData).IsRequired().HasColumnType("nvarchar(max)");
+                }
+                
                 entity.Property(e => e.ModifiedBy).HasMaxLength(255);
                 
                 entity.HasIndex(e => new { e.FileName, e.SheetName });
