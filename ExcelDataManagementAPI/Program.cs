@@ -45,21 +45,24 @@ namespace ExcelDataManagementAPI
             {
                 c.SwaggerDoc("v1", new OpenApiInfo
                 {
-                    Title = "Excel Data Management API",
+                    Title = "ISNA Data Management API",
                     Version = "v1",
-                    Description = "Excel dosyalarını yönetmek ve karşılaştırmak için API"
+                    Description = "Excel dosyalarını yönetmek, karşılaştırmak ve SSIS entegrasyonu için API"
                 });
             });
 
             // Veritabanı bağlantısı
             builder.Services.AddDbContext<ExcelDataContext>(options =>
             {
-                options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+                // Use in-memory database for testing/demo purposes
+                options.UseInMemoryDatabase("ISNADATAMANAGEMENT");
+                // For production, use: options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
             });
 
             // Dependency Injection
             builder.Services.AddScoped<IExcelService, ExcelService>();
             builder.Services.AddScoped<IDataComparisonService, DataComparisonService>();
+            builder.Services.AddScoped<ISSISService, SSISService>();
 
             // Dosya upload konfigürasyonu
             builder.Services.Configure<IISServerOptions>(options =>
@@ -136,7 +139,7 @@ namespace ExcelDataManagementAPI
                 Console.WriteLine($"❌ Veritabanı hatası: {ex.Message}");
             }
 
-            Console.WriteLine("🚀 Excel Data Management API başlatıldı!");
+            Console.WriteLine("🚀 ISNA Data Management API başlatıldı!");
             Console.WriteLine("📖 Swagger UI: http://localhost:5002/swagger");
             Console.WriteLine("🌐 API Base URL: http://localhost:5002/api");
             Console.WriteLine("🔒 HTTPS Swagger UI: https://localhost:7002/swagger");
@@ -145,6 +148,7 @@ namespace ExcelDataManagementAPI
             Console.WriteLine("✅ CORS yapılandırması aktiv - Frontend bağlantısı hazır!");
             Console.WriteLine("💡 LaunchSettings.json'daki portlar kullanılıyor");
             Console.WriteLine("🔧 JSON Serialization: Unicode karakterler destekleniyor");
+            Console.WriteLine("📊 SSIS Entegrasyonu: Veri import işlemleri için hazır!");
 
             app.Run();
         }

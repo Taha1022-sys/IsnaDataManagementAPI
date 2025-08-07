@@ -11,6 +11,7 @@ namespace ExcelDataManagementAPI.Data
         
         public DbSet<ExcelFile> ExcelFiles { get; set; }
         public DbSet<ExcelDataRow> ExcelDataRows { get; set; }
+        public DbSet<DataImport> DataImports { get; set; }
         
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -39,6 +40,22 @@ namespace ExcelDataManagementAPI.Data
                 entity.HasIndex(e => e.CreatedDate);
                 entity.HasIndex(e => e.IsDeleted);
                 entity.HasIndex(e => e.ModifiedDate);
+            });
+            
+            modelBuilder.Entity<DataImport>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.FileName).IsRequired().HasMaxLength(255);
+                entity.Property(e => e.FilePath).HasMaxLength(500);
+                entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.ErrorMessage).HasMaxLength(1000);
+                entity.Property(e => e.CreatedBy).HasMaxLength(255);
+                entity.Property(e => e.SSISPackageName).HasMaxLength(255);
+                entity.Property(e => e.ProcessingLog).HasMaxLength(1000);
+                
+                entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => e.CreatedDate);
+                entity.HasIndex(e => e.FileName);
             });
         }
     }
