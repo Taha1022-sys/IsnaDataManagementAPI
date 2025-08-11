@@ -19,9 +19,6 @@ namespace ExcelDataManagementAPI.Controllers
             _logger = logger;
         }
 
-        /// <summary>
-        /// API test endpoint'i
-        /// </summary>
         [HttpGet("test")]
         public IActionResult Test()
         {
@@ -38,9 +35,6 @@ namespace ExcelDataManagementAPI.Controllers
             });
         }
 
-        /// <summary>
-        /// Bilgisayardan iki Excel dosyasý seçip karþýlaþtýrma
-        /// </summary>
         [HttpPost("compare-from-files")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> CompareFromFiles([FromForm] CompareExcelFilesDto request)
@@ -59,7 +53,6 @@ namespace ExcelDataManagementAPI.Controllers
                         message = "Lütfen ikinci Excel dosyasýný seçin" 
                     });
 
-                // Dosya uzantýsý kontrolü
                 var allowedExtensions = new[] { ".xlsx", ".xls" };
                 var file1Extension = Path.GetExtension(request.File1.FileName).ToLowerInvariant();
                 var file2Extension = Path.GetExtension(request.File2.FileName).ToLowerInvariant();
@@ -72,15 +65,12 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                // Her iki dosyayý da yükle
                 var uploadedFile1 = await _excelService.UploadExcelFileAsync(request.File1, request.ComparedBy);
                 var uploadedFile2 = await _excelService.UploadExcelFileAsync(request.File2, request.ComparedBy);
 
-                // Her iki dosyayý da oku
                 await _excelService.ReadExcelDataAsync(uploadedFile1.FileName, request.Sheet1Name);
                 await _excelService.ReadExcelDataAsync(uploadedFile2.FileName, request.Sheet2Name);
 
-                // Karþýlaþtýr
                 var result = await _comparisonService.CompareFilesAsync(
                     uploadedFile1.FileName, 
                     uploadedFile2.FileName, 
@@ -102,9 +92,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Yüklü dosyalar arasýnda karþýlaþtýrma
-        /// </summary>
         [HttpPost("files")]
         public async Task<IActionResult> CompareFiles([FromBody] CompareFilesRequestDto compareRequest)
         {
@@ -119,10 +106,6 @@ namespace ExcelDataManagementAPI.Controllers
                 return StatusCode(500, new { success = false, message = ex.Message });
             }
         }
-
-        /// <summary>
-        /// Ayný dosyanýn farklý versiyonlarýný karþýlaþtýrma
-        /// </summary>
         [HttpPost("versions")]
         public async Task<IActionResult> CompareVersions([FromBody] CompareVersionsRequestDto compareRequest)
         {
@@ -138,9 +121,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Belirli tarih aralýðýndaki deðiþiklikleri getirme
-        /// </summary>
         [HttpGet("changes/{fileName}")]
         public async Task<IActionResult> GetChanges(string fileName, [FromQuery] DateTime? fromDate = null, [FromQuery] DateTime? toDate = null, [FromQuery] string? sheetName = null)
         {
@@ -156,9 +136,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Dosyanýn deðiþiklik geçmiþini getirme
-        /// </summary>
         [HttpGet("history/{fileName}")]
         public async Task<IActionResult> GetChangeHistory(string fileName, [FromQuery] string? sheetName = null)
         {
@@ -174,9 +151,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Belirli bir satýrýn deðiþiklik geçmiþini getirme
-        /// </summary>
         [HttpGet("row-history/{rowId}")]
         public async Task<IActionResult> GetRowHistory(int rowId)
         {
@@ -192,9 +166,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Ýki farklý tarihteki dosya durumunu karþýlaþtýrma
-        /// </summary>
         [HttpPost("snapshot-compare")]
         public async Task<IActionResult> CompareSnapshots([FromBody] CompareVersionsRequestDto compareRequest)
         {

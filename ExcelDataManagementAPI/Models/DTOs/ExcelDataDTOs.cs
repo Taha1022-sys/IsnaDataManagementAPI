@@ -109,11 +109,10 @@ namespace ExcelDataManagementAPI.Models.DTOs
         public string? AddedBy { get; set; }
     }
 
-    // Manuel dosya seçimi için DTOs
     public class ManualFileSelectionDto
     {
         public IFormFile ExcelFile { get; set; } = null!;
-        public string Operation { get; set; } = string.Empty; // "read", "compare", "update"
+        public string Operation { get; set; } = string.Empty; 
         public string? SheetName { get; set; }
         public string? ProcessedBy { get; set; }
     }

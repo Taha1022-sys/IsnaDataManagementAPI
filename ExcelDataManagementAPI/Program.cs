@@ -12,14 +12,12 @@ namespace ExcelDataManagementAPI
         {
             var builder = WebApplication.CreateBuilder(args);
 
-            // EPPlus lisansı
             ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
-            // Servis kayıtları
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             
-            // Swagger konfigürasyonu
+            
             builder.Services.AddSwaggerGen(c =>
             {
                 c.SwaggerDoc("v1", new OpenApiInfo
@@ -30,44 +28,43 @@ namespace ExcelDataManagementAPI
                 });
             });
 
-            // Veritabanı bağlantısı
+            
             builder.Services.AddDbContext<ExcelDataContext>(options =>
             {
                 options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
             });
 
-            // Dependency Injection
+            
             builder.Services.AddScoped<IExcelService, ExcelService>();
             builder.Services.AddScoped<IDataComparisonService, DataComparisonService>();
-            builder.Services.AddScoped<IAuditService, AuditService>(); // Audit service eklendi 
+            builder.Services.AddScoped<IAuditService, AuditService>(); 
 
-            // HTTP Context accessor - IP ve User Agent bilgileri için
+            
             builder.Services.AddHttpContextAccessor();  
 
-            // Dosya upload konfigürasyonu
+            
             builder.Services.Configure<IISServerOptions>(options =>
             {
-                options.MaxRequestBodySize = 100 * 1024 * 1024; // 100MB
+                options.MaxRequestBodySize = 100 * 1024 * 1024; 
             });
 
-            // CORS - Frontend için özel konfigürasyon
+            
             builder.Services.AddCors(options =>
             {
                 options.AddPolicy("ApiPolicy", policy =>
                 {
                     policy.WithOrigins(
-                            "http://localhost:5174",   // Frontend URL
-                            "http://localhost:3000",   // React development server (alternatif)
-                            "http://localhost:5173",   // Vite development server (alternatif)
-                            "https://localhost:7002",  // Backend HTTPS URL (kendi kendine istek için)
-                            "http://localhost:5002"    // Backend HTTP URL (kendi kendine istek için)
+                            "http://localhost:5174",   
+                            "http://localhost:3000",   
+                            "http://localhost:5173",   
+                            "https://localhost:7002",  
+                            "http://localhost:5002"    
                         )
                         .AllowAnyHeader()
                         .AllowAnyMethod()
-                        .AllowCredentials();  // Credentials desteği
+                        .AllowCredentials(); 
                 });
 
-                // Development için daha esnek policy
                 options.AddPolicy("DevelopmentPolicy", policy =>
                 {
                     policy.AllowAnyOrigin()
@@ -78,7 +75,6 @@ namespace ExcelDataManagementAPI
 
             var app = builder.Build();
 
-            // Development ortamı
             if (app.Environment.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();
@@ -89,30 +85,22 @@ namespace ExcelDataManagementAPI
                     c.RoutePrefix = "swagger";
                 });
                 
-                // Development ortamında daha esnek CORS policy kullan
                 app.UseCors("DevelopmentPolicy");
             }
             else
             {
                 app.UseHttpsRedirection();
-                // Production ortamında güvenli CORS policy kullan
                 app.UseCors("ApiPolicy");
             }
-
-            // Static files
             app.UseStaticFiles();
-
-            // Middleware sırası - CORS'u Authorization'dan önce kullan     
             app.UseAuthorization();
             app.MapControllers();
 
-            // Veritabanı migration kontrolü
             try
             {
                 using var scope = app.Services.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<ExcelDataContext>();
                 
-                // Migration'ları kontrol et ve uygula
                 var pendingMigrations = await context.Database.GetPendingMigrationsAsync();
                 if (pendingMigrations.Any())
                 {
@@ -129,13 +117,11 @@ namespace ExcelDataManagementAPI
                     Console.WriteLine("✅ Veritabanı güncel - migration gerekmiyor!");
                 }
                 
-                // Veritabanı bağlantısını test et
                 var canConnect = await context.Database.CanConnectAsync();
                 if (canConnect)
                 {
                     Console.WriteLine("✅ Veritabanı bağlantısı başarılı!");
                     
-                    // Audit tablosunun oluşup oluşmadığını kontrol et
                     var auditTableExists = await context.Database
                         .SqlQueryRaw<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'GerceklesenRaporlarKopya'")
                         .FirstOrDefaultAsync();

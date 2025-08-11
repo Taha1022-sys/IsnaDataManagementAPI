@@ -43,10 +43,9 @@ namespace ExcelDataManagementAPI.Data
                 entity.HasIndex(e => e.ModifiedDate);
             });
 
-            // GerceklesenRaporlarKopya audit tablosu konfigürasyonu
             modelBuilder.Entity<GerceklesenRaporlar>(entity =>
             {
-                entity.ToTable("GerceklesenRaporlar"); // Tablo adýný belirle
+                entity.ToTable("GerceklesenRaporlar"); 
                 entity.HasKey(e => e.Id);
                 
                 entity.Property(e => e.FileName).IsRequired().HasMaxLength(255);
@@ -62,7 +61,6 @@ namespace ExcelDataManagementAPI.Data
                 entity.Property(e => e.NewValue).HasColumnType("nvarchar(max)");
                 entity.Property(e => e.ChangedColumns).HasColumnType("nvarchar(max)");
                 
-                // Index'ler - performans için
                 entity.HasIndex(e => e.FileName);
                 entity.HasIndex(e => e.SheetName);
                 entity.HasIndex(e => e.OperationType);

@@ -21,9 +21,6 @@ namespace ExcelDataManagementAPI.Controllers
             _logger = logger;
         }
 
-        /// <summary>
-        /// API test endpoint'i
-        /// </summary>
         [HttpGet("test")]
         public IActionResult Test()
         {
@@ -61,9 +58,6 @@ namespace ExcelDataManagementAPI.Controllers
             });
         }
 
-        /// <summary>
-        /// Debug endpoint - Veritabaný durumunu kontrol etme
-        /// </summary>
         [HttpGet("debug/database-status")]
         public async Task<IActionResult> GetDatabaseStatus()
         {
@@ -74,7 +68,6 @@ namespace ExcelDataManagementAPI.Controllers
                 var activeDataRows = await _context.ExcelDataRows.Where(r => !r.IsDeleted).CountAsync();
                 var deletedDataRows = await _context.ExcelDataRows.Where(r => r.IsDeleted).CountAsync();
 
-                // Her dosya için detaylý bilgi
                 var fileDetails = new List<object>();
                 foreach (var file in filesCount)
                 {
@@ -124,9 +117,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Yüklü Excel dosyalarýnýn listesi
-        /// </summary>
         [HttpGet("files")]
         public async Task<IActionResult> GetFiles()
         {
@@ -146,9 +136,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Excel dosyasý yükleme - Bilgisayardan dosya seçimi
-        /// </summary>
         [HttpPost("upload")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> Upload(IFormFile file, [FromForm] string? uploadedBy = null)
@@ -161,7 +148,6 @@ namespace ExcelDataManagementAPI.Controllers
                         message = "Lütfen bilgisayarýnýzdan bir Excel dosyasý seçin (.xlsx veya .xls)" 
                     });
 
-                // Dosya uzantýsý kontrolü
                 var allowedExtensions = new[] { ".xlsx", ".xls" };
                 var fileExtension = Path.GetExtension(file.FileName).ToLowerInvariant();
                 
@@ -194,9 +180,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Bilgisayardan Excel dosyasý seçip direkt okuma
-        /// </summary>
         [HttpPost("read-from-file")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> ReadFromFile([FromForm] ManualFileSelectionDto request)
@@ -209,7 +192,6 @@ namespace ExcelDataManagementAPI.Controllers
                         message = "Lütfen bilgisayarýnýzdan bir Excel dosyasý seçin" 
                     });
 
-                // Dosya uzantýsý kontrolü
                 var allowedExtensions = new[] { ".xlsx", ".xls" };
                 var fileExtension = Path.GetExtension(request.ExcelFile.FileName).ToLowerInvariant();
                 
@@ -221,10 +203,8 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                // Önce dosyayý yükle
                 var uploadedFile = await _excelService.UploadExcelFileAsync(request.ExcelFile, request.ProcessedBy);
                 
-                // Sonra oku
                 var data = await _excelService.ReadExcelDataAsync(uploadedFile.FileName, request.SheetName);
                 
                 return Ok(new { 
@@ -244,9 +224,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Bilgisayardan Excel dosyasý seçip güncelleme
-        /// </summary>
         [HttpPost("update-from-file")]
         [Consumes("multipart/form-data")]
         public async Task<IActionResult> UpdateFromFile([FromForm] UpdateExcelFileDto request)
@@ -259,7 +236,6 @@ namespace ExcelDataManagementAPI.Controllers
                         message = "Lütfen bilgisayarýnýzdan bir Excel dosyasý seçin" 
                     });
 
-                // Dosya uzantýsý kontrolü
                 var allowedExtensions = new[] { ".xlsx", ".xls" };
                 var fileExtension = Path.GetExtension(request.ExcelFile.FileName).ToLowerInvariant();
                 
@@ -271,10 +247,8 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                // Önce dosyayý yükle
                 var uploadedFile = await _excelService.UploadExcelFileAsync(request.ExcelFile, request.UpdatedBy);
                 
-                // Dosyayý oku
                 var data = await _excelService.ReadExcelDataAsync(uploadedFile.FileName, request.SheetName);
                 
                 return Ok(new { 
@@ -300,24 +274,17 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Yüklü dosyadan veri okuma ve veritabanýna aktarma - GELÝÞTÝRÝLMÝÞ VERSÝYON
-        /// sheetName belirtilmezse TÜM sheet'ler okunur!
-        /// </summary>
         [HttpPost("read/{fileName}")]
         public async Task<IActionResult> ReadExcelData(string fileName, [FromQuery] string? sheetName = null, [FromQuery] bool forceReread = false)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 _logger.LogInformation("ReadExcelData çaðrýldý: FileName={FileName}, SheetName={SheetName}, ForceReread={ForceReread}", fileName, sheetName, forceReread);
 
-                // Eðer force reread deðilse, önce mevcut verileri kontrol et
                 if (!forceReread)
                 {
-                    // Özel sheet belirtilmiþse sadece o sheet'i kontrol et
                     var query = _context.ExcelDataRows.Where(r => r.FileName == fileName && !r.IsDeleted);
                     if (!string.IsNullOrEmpty(sheetName))
                     {
@@ -330,10 +297,8 @@ namespace ExcelDataManagementAPI.Controllers
                     {
                         _logger.LogInformation("Veriler zaten mevcut, veritabanýndan döndürülüyor: {FileName}, Sheet: {SheetName}", fileName, sheetName);
                         
-                        // Mevcut verileri döndür
                         var existingData = await _excelService.GetAllExcelDataAsync(fileName, sheetName);
                         
-                        // Eðer tüm sheet'ler isteniyorsa sheet bilgilerini de ekle
                         object additionalInfo = new { };
                         if (string.IsNullOrEmpty(sheetName))
                         {
@@ -360,10 +325,8 @@ namespace ExcelDataManagementAPI.Controllers
                     }
                 }
 
-                // Yeni okuma yap
                 var data = await _excelService.ReadExcelDataAsync(fileName, sheetName);
                 
-                // Eðer tüm sheet'ler okunmuþsa ek bilgiler ekle
                 object resultAdditionalInfo = new { };
                 if (string.IsNullOrEmpty(sheetName))
                 {
@@ -396,15 +359,11 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Excel dosyasýndaki TÜM sheet'leri okuyup veritabanýna kaydetme
-        /// </summary>
         [HttpPost("read-all-sheets/{fileName}")]
         public async Task<IActionResult> ReadAllSheetsFromExcel(string fileName, [FromQuery] string? processedBy = null)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 _logger.LogInformation("ReadAllSheetsFromExcel çaðrýldý: FileName={FileName}", fileName);
@@ -435,15 +394,11 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Excel dosyasýný zorla yeniden okuma (mevcut deðiþiklikleri silecek!)
-        /// </summary>
         [HttpPost("force-reread/{fileName}")]
         public async Task<IActionResult> ForceRereadExcelData(string fileName, [FromQuery] string? sheetName = null)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 _logger.LogWarning("FORCE REREAD çaðrýldý - mevcut deðiþiklikler kaybolacak: {FileName}", fileName);
@@ -466,20 +421,15 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Dosyadan veri getirme (sayfalama ile) - ÖNCE MEVCUT VERÝLERÝ KONTROL EDER
-        /// </summary>
         [HttpGet("data/{fileName}")]
         public async Task<IActionResult> GetExcelData(string fileName, [FromQuery] string? sheetName = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 _logger.LogInformation("Veri getirilmeye çalýþýlýyor: FileName={FileName}, SheetName={SheetName}, Page={Page}", fileName, sheetName, page);
 
-                // Önce dosyanýn var olup olmadýðýný kontrol et
                 var fileExists = await _context.ExcelFiles
                     .AnyAsync(f => f.FileName == fileName && f.IsActive);
 
@@ -499,11 +449,9 @@ namespace ExcelDataManagementAPI.Controllers
                     });
                 }
 
-                // Verileri getir
                 var data = await _excelService.GetExcelDataAsync(fileName, sheetName, page, pageSize);
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
 
-                // Eðer veri yoksa ancak dosya varsa, dosyanýn okunup okunmadýðýný kontrol et
                 if (data.Count == 0)
                 {
                     var totalDataCount = await _context.ExcelDataRows
@@ -512,7 +460,6 @@ namespace ExcelDataManagementAPI.Controllers
 
                     if (totalDataCount == 0)
                     {
-                        // Dosya var ama veri yok - okunmamýþ olabilir
                         var availableSheets = await _excelService.GetSheetsAsync(fileName);
                         
                         _logger.LogWarning("Dosya bulundu ancak veri yok: {FileName}", fileName);
@@ -537,7 +484,6 @@ namespace ExcelDataManagementAPI.Controllers
                         });
                     }
                     
-                    // Sheet belirtilmiþse ve o sheet'te veri yoksa
                     if (!string.IsNullOrEmpty(sheetName))
                     {
                         var sheetExists = await _context.ExcelDataRows
@@ -563,8 +509,7 @@ namespace ExcelDataManagementAPI.Controllers
                         }
                     }
                 }
-                
-                // Veri varsa baþarýyla döndür
+
                 return Ok(new { 
                     success = true, 
                     data = data, 
@@ -575,7 +520,7 @@ namespace ExcelDataManagementAPI.Controllers
                     statistics = statistics,
                     hasData = data.Count > 0,
                     message = data.Count > 0 ? $"Sayfa {page} - {data.Count} kayýt gösteriliyor" : "Bu sayfada gösterilecek veri bulunamadý",
-                    dataSource = "database" // Verinin veritabanýndan geldiðini belirt
+                    dataSource = "database" 
                 });
             }
             catch (Exception ex)
@@ -585,20 +530,15 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Dosyadan tüm verileri getirme (sayfalama olmadan)
-        /// </summary>
         [HttpGet("data/{fileName}/all")]
         public async Task<IActionResult> GetAllExcelData(string fileName, [FromQuery] string? sheetName = null)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 _logger.LogInformation("Tüm veriler getirilmeye çalýþýlýyor: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
 
-                // Önce dosyanýn var olup olmadýðýný kontrol et
                 var fileExists = await _context.ExcelFiles
                     .AnyAsync(f => f.FileName == fileName && f.IsActive);
 
@@ -620,7 +560,6 @@ namespace ExcelDataManagementAPI.Controllers
                 var data = await _excelService.GetAllExcelDataAsync(fileName, sheetName);
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
 
-                // Eðer veri yoksa detaylý bilgi ver
                 if (data.Count == 0)
                 {
                     var totalDataCount = await _context.ExcelDataRows
@@ -629,8 +568,7 @@ namespace ExcelDataManagementAPI.Controllers
 
                     if (totalDataCount == 0)
                     {
-                        // Dosya var ama veri yok - okunmamýþ olabilir
-                        var availableSheets = await _excelService.GetSheetsAsync(fileName);
+                      var availableSheets = await _excelService.GetSheetsAsync(fileName);
                         
                         _logger.LogWarning("Dosya bulundu ancak veri yok: {FileName}", fileName);
                         return Ok(new
@@ -653,7 +591,6 @@ namespace ExcelDataManagementAPI.Controllers
                         });
                     }
                     
-                    // Sheet belirtilmiþse ve o sheet'te veri yoksa
                     if (!string.IsNullOrEmpty(sheetName))
                     {
                         var availableSheets = await _context.ExcelDataRows
@@ -697,9 +634,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Excel verisini güncelleme - GELÝÞTÝRÝLMÝÞ VERSÝYON
-        /// </summary>
         [HttpPut("data")]
         public async Task<IActionResult> UpdateExcelData([FromBody] ExcelDataUpdateDto updateDto)
         {
@@ -739,7 +673,6 @@ namespace ExcelDataManagementAPI.Controllers
             {
                 _logger.LogError(ex, "Veri güncellenirken hata: ID={Id}, ModifiedBy={ModifiedBy}", updateDto.Id, updateDto.ModifiedBy);
                 
-                // Hata tipine göre farklý mesajlar
                 if (ex.Message.Contains("bulunamadý"))
                 {
                     return NotFound(new { 
@@ -773,9 +706,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Toplu Excel verisini güncelleme
-        /// </summary>
         [HttpPut("data/bulk")]
         public async Task<IActionResult> BulkUpdateExcelData([FromBody] BulkUpdateDto bulkUpdateDto)
         {
@@ -791,9 +721,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Yeni bir satýr ekleme
-        /// </summary>
         [HttpPost("data")]
         public async Task<IActionResult> AddExcelRow([FromBody] AddRowRequestDto addRowDto)
         {
@@ -809,9 +736,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Veri silme
-        /// </summary>
         [HttpDelete("data/{id}")]
         public async Task<IActionResult> DeleteExcelData(int id, [FromQuery] string? deletedBy = null)
         {
@@ -827,9 +751,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Son deðiþiklikleri getirme - Web üzerinden SQL sorgularý
-        /// </summary>
         [HttpGet("recent-changes")]
         public async Task<IActionResult> GetRecentChanges(
             [FromQuery] int hours = 24, 
@@ -841,7 +762,6 @@ namespace ExcelDataManagementAPI.Controllers
             {
                 var query = _context.GerceklesenRaporlar.AsQueryable();
 
-                // Son X saat içindeki deðiþiklikler
                 var fromDate = DateTime.UtcNow.AddHours(-hours);
                 query = query.Where(r => r.ChangeDate >= fromDate);
 
@@ -900,9 +820,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Bugünkü tüm deðiþiklikleri getirme
-        /// </summary>
         [HttpGet("today-changes")]
         public async Task<IActionResult> GetTodayChanges()
         {
@@ -962,9 +879,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// En aktif kullanýcýlarý getirme
-        /// </summary>
         [HttpGet("most-active-users")]
         public async Task<IActionResult> GetMostActiveUsers([FromQuery] int days = 7)
         {
@@ -1009,9 +923,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Excel verilerini belirtilen kritere göre dýþa aktarma
-        /// </summary>
         [HttpPost("export")]
         public async Task<IActionResult> ExportToExcel([FromBody] ExcelExportRequestDto exportRequest)
         {
@@ -1029,15 +940,11 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Dosyadaki sayfalarý (sheet'leri) getirme
-        /// </summary>
         [HttpGet("sheets/{fileName}")]
         public async Task<IActionResult> GetSheets(string fileName)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 var sheets = await _excelService.GetSheetsAsync(fileName);
@@ -1055,15 +962,11 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Veritabanýndaki verilerin istatistiklerini alma
-        /// </summary>
         [HttpGet("statistics/{fileName}")]
         public async Task<IActionResult> GetDataStatistics(string fileName, [FromQuery] string? sheetName = null)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 var statistics = await _excelService.GetDataStatisticsAsync(fileName, sheetName);
@@ -1076,15 +979,11 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Excel dosyasý silme
-        /// </summary>
         [HttpDelete("files/{fileName}")]
         public async Task<IActionResult> DeleteFile(string fileName, [FromQuery] string? deletedBy = null)
         {
             try
             {
-                // URL decode iþlemi
                 fileName = Uri.UnescapeDataString(fileName);
                 
                 var result = await _excelService.DeleteExcelFileAsync(fileName, deletedBy);
@@ -1116,9 +1015,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Son derece kullanýlabilir bir güncel veritabaný durumu
-        /// </summary>
         [HttpGet("current-status")]
         public async Task<IActionResult> GetCurrentDatabaseStatus()
         {
@@ -1168,9 +1064,6 @@ namespace ExcelDataManagementAPI.Controllers
             }
         }
 
-        /// <summary>
-        /// Web sitesi için tablo yönetim dashboard verileri
-        /// </summary>
         [HttpGet("dashboard")]
         public async Task<IActionResult> GetDashboardData()
         {

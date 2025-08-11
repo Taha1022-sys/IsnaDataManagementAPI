@@ -26,13 +26,11 @@ namespace ExcelDataManagementAPI.Services
                 var differences = new List<DataDifferenceDto>();
                 var comparisonId = Guid.NewGuid().ToString();
 
-                // File1'deki verilerle File2'deki verileri karþýlaþtýr
                 foreach (var row1 in file1Data)
                 {
                     var correspondingRow2 = file2Data.FirstOrDefault(r => r.RowIndex == row1.RowIndex);
                     if (correspondingRow2 == null)
                     {
-                        // Satýr File2'de yok - silinmiþ
                         differences.Add(new DataDifferenceDto
                         {
                             RowIndex = row1.RowIndex,
@@ -44,7 +42,6 @@ namespace ExcelDataManagementAPI.Services
                     }
                     else
                     {
-                        // Satýrlarý karþýlaþtýr
                         var row1Data = JsonSerializer.Deserialize<Dictionary<string, string>>(row1.RowData) ?? new Dictionary<string, string>();
                         var row2Data = JsonSerializer.Deserialize<Dictionary<string, string>>(correspondingRow2.RowData) ?? new Dictionary<string, string>();
 
@@ -65,7 +62,6 @@ namespace ExcelDataManagementAPI.Services
                     }
                 }
 
-                // File2'de olup File1'de olmayan satýrlarý bul (yeni eklenenler)
                 foreach (var row2 in file2Data)
                 {
                     if (!file1Data.Any(r => r.RowIndex == row2.RowIndex))
@@ -114,11 +110,9 @@ namespace ExcelDataManagementAPI.Services
                 var version1Data = await GetFileDataByDateAsync(fileName, version1Date, sheetName);
                 var version2Data = await GetFileDataByDateAsync(fileName, version2Date, sheetName);
 
-                // Ayný mantýkla karþýlaþtýr
                 var differences = new List<DataDifferenceDto>();
                 var comparisonId = Guid.NewGuid().ToString();
 
-                // Basit implementasyon - daha detaylý yapýlabilir
                 foreach (var row1 in version1Data)
                 {
                     var correspondingRow2 = version2Data.FirstOrDefault(r => r.RowIndex == row1.RowIndex);
@@ -236,7 +230,6 @@ namespace ExcelDataManagementAPI.Services
                 if (baseRow == null)
                     throw new Exception($"Satýr bulunamadý: {rowId}");
                 
-                // Ayný dosya, sheet ve satýr indexindeki tüm versiyonlarý al
                 var history = await _context.ExcelDataRows
                     .Where(r => r.FileName == baseRow.FileName && 
                                r.SheetName == baseRow.SheetName && 

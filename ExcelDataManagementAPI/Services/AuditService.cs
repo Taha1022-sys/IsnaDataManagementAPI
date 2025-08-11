@@ -54,7 +54,6 @@ namespace ExcelDataManagementAPI.Services
                     IsSuccess = true
                 };
 
-                // HTTP context varsa kullanýcý bilgilerini al
                 if (httpContext != null)
                 {
                     auditLog.UserIP = GetClientIPAddress(httpContext);
@@ -71,8 +70,6 @@ namespace ExcelDataManagementAPI.Services
             {
                 _logger.LogError(ex, "Audit log kaydedilirken hata: {OperationType} - {FileName}", operationType, fileName);
                 
-                // Audit log hatasý ana iþlemi durdurmamak için exception fýrlatmýyoruz
-                // Sadece error log kaydediyoruz
                 try
                 {
                     var errorLog = new GerceklesenRaporlar
@@ -93,7 +90,6 @@ namespace ExcelDataManagementAPI.Services
                 }
                 catch (Exception innerEx)
                 {
-                    // Son çare olarak da hata verirse sessizce geçiyoruz
                     _logger.LogCritical(innerEx, "Audit error log bile kaydedilemedi!");
                 }
             }
@@ -137,25 +133,21 @@ namespace ExcelDataManagementAPI.Services
         {
             string? ipAddress = null;
 
-            // X-Forwarded-For header'ýný kontrol et (proxy/load balancer arkasýnda)
             if (context.Request.Headers.ContainsKey("X-Forwarded-For"))
             {
                 ipAddress = context.Request.Headers["X-Forwarded-For"].FirstOrDefault();
             }
 
-            // X-Real-IP header'ýný kontrol et
             if (string.IsNullOrEmpty(ipAddress) && context.Request.Headers.ContainsKey("X-Real-IP"))
             {
                 ipAddress = context.Request.Headers["X-Real-IP"].FirstOrDefault();
             }
 
-            // Remote IP'yi al
             if (string.IsNullOrEmpty(ipAddress))
             {
                 ipAddress = context.Connection.RemoteIpAddress?.ToString();
             }
 
-            // IPv6 loopback'i IPv4'e çevir
             if (ipAddress == "::1")
             {
                 ipAddress = "127.0.0.1";
