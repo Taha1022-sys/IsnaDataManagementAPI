@@ -12,13 +12,53 @@ namespace ExcelDataManagementAPI.Services
         private readonly ExcelDataContext _context;
         private readonly IWebHostEnvironment _environment;
         private readonly ILogger<ExcelService> _logger;
+        private readonly IAuditService _auditService;
 
-        public ExcelService(ExcelDataContext context, IWebHostEnvironment environment, ILogger<ExcelService> logger)
+        public ExcelService(ExcelDataContext context, IWebHostEnvironment environment, ILogger<ExcelService> logger, IAuditService auditService)
         {
             _context = context;
             _environment = environment;
             _logger = logger;
+            _auditService = auditService;
             ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+        }
+
+        /// <summary>
+        /// Database operasyonlarýný retry logic ile çalýþtýrýr
+        /// </summary>
+        private async Task<T> ExecuteWithRetryAsync<T>(Func<Task<T>> operation, int maxRetries = 3)
+        {
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    return await operation();
+                }
+                catch (DbUpdateConcurrencyException ex) when (attempt < maxRetries)
+                {
+                    _logger.LogWarning("Concurrency exception (attempt {Attempt}/{MaxRetries}): {Message}", attempt, maxRetries, ex.Message);
+                    
+                    // Kýsa bir süre bekle
+                    await Task.Delay(TimeSpan.FromMilliseconds(100 * attempt));
+                    
+                    // Context'i yenile
+                    foreach (var entry in _context.ChangeTracker.Entries())
+                    {
+                        if (entry.Entity != null)
+                        {
+                            entry.Reload();
+                        }
+                    }
+                }
+                catch (DbUpdateConcurrencyException ex) when (attempt == maxRetries)
+                {
+                    _logger.LogError(ex, "Concurrency exception after {MaxRetries} attempts", maxRetries);
+                    throw new InvalidOperationException(
+                        "Veritabanýnda eþzamanlýlýk sorunu oluþtu. Lütfen iþlemi tekrar deneyin.", ex);
+                }
+            }
+            
+            throw new InvalidOperationException("Beklenmeyen durum: retry logic tamamlanamadý");
         }
 
         public async Task<ExcelFile> UploadExcelFileAsync(IFormFile file, string? uploadedBy = null)
@@ -67,115 +107,377 @@ namespace ExcelDataManagementAPI.Services
                 .ToListAsync();
         }
 
+        /// <summary>
+        /// Excel dosyasýndaki TÜM sheet'leri okuyup veritabanýna kaydeder
+        /// </summary>
+        public async Task<Dictionary<string, List<ExcelDataResponseDto>>> ReadAllSheetsFromExcelAsync(string fileName)
+        {
+            return await ExecuteWithRetryAsync(async () =>
+            {
+                try
+                {
+                    // URL decode iþlemi
+                    fileName = Uri.UnescapeDataString(fileName);
+                    
+                    _logger.LogInformation("ReadAllSheetsFromExcelAsync baþlatýldý: FileName={FileName}", fileName);
+
+                    var excelFile = await _context.ExcelFiles.FirstOrDefaultAsync(f => f.FileName == fileName && f.IsActive);
+                    if (excelFile == null)
+                    {
+                        _logger.LogError("Dosya bulunamadý: {FileName}", fileName);
+                        throw new FileNotFoundException($"Dosya bulunamadý: {fileName}");
+                    }
+
+                    // Fiziksel dosyanýn varlýðýný kontrol et
+                    if (!System.IO.File.Exists(excelFile.FilePath))
+                    {
+                        _logger.LogError("Fiziksel dosya bulunamadý: {FilePath}", excelFile.FilePath);
+                        throw new FileNotFoundException($"Fiziksel dosya bulunamadý: {excelFile.FilePath}");
+                    }
+
+                    var allResults = new Dictionary<string, List<ExcelDataResponseDto>>();
+
+                    using var package = new ExcelPackage(new FileInfo(excelFile.FilePath));
+                    
+                    if (package.Workbook.Worksheets.Count == 0)
+                    {
+                        _logger.LogError("Excel dosyasýnda hiç sheet bulunamadý");
+                        throw new Exception("Excel dosyasýnda hiç sheet bulunamadý");
+                    }
+
+                    // Concurrency sorunlarýný önlemek için transaction kullan
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    
+                    try
+                    {
+                        _logger.LogInformation("Dosyada {Count} sheet bulundu, tümü iþlenecek", package.Workbook.Worksheets.Count);
+
+                        // Her sheet'i iþle
+                        foreach (var worksheet in package.Workbook.Worksheets)
+                        {
+                            _logger.LogInformation("Sheet iþleniyor: {SheetName}", worksheet.Name);
+
+                            var sheetResults = new List<ExcelDataResponseDto>();
+
+                            // Worksheet boþ mu kontrol et
+                            if (worksheet.Dimension == null)
+                            {
+                                _logger.LogWarning("Worksheet boþ, atlanýyor: {SheetName}", worksheet.Name);
+                                allResults[worksheet.Name] = sheetResults;
+                                continue;
+                            }
+
+                            // Bu sheet için mevcut verileri temizle
+                            var existingDataCount = await _context.ExcelDataRows
+                                .Where(r => r.FileName == fileName && r.SheetName == worksheet.Name && !r.IsDeleted)
+                                .CountAsync();
+                            
+                            if (existingDataCount > 0)
+                            {
+                                // Soft delete yaklaþýmý kullan
+                                var existingData = await _context.ExcelDataRows
+                                    .Where(r => r.FileName == fileName && r.SheetName == worksheet.Name && !r.IsDeleted)
+                                    .ToListAsync();
+                                
+                                foreach (var row in existingData)
+                                {
+                                    row.IsDeleted = true;
+                                    row.ModifiedDate = DateTime.UtcNow;
+                                    row.ModifiedBy = "SYSTEM_READ_ALL_SHEETS";
+                                }
+                                
+                                await _context.SaveChangesAsync();
+                                _logger.LogInformation("Sheet için önceki veriler soft delete yapýldý: {SheetName} - {Count} kayýt", 
+                                    worksheet.Name, existingDataCount);
+                            }
+
+                            // Header'larý al
+                            var headers = new List<string>();
+                            var columnCount = worksheet.Dimension.Columns;
+                            for (int col = 1; col <= columnCount; col++)
+                            {
+                                var headerValue = worksheet.Cells[1, col].Value?.ToString()?.Trim();
+                                headers.Add(!string.IsNullOrEmpty(headerValue) ? headerValue : $"Column{col}");
+                            }
+
+                            _logger.LogInformation("Sheet {SheetName} için header'lar okundu: {Headers}", worksheet.Name, string.Join(", ", headers));
+
+                            // Verileri oku ve veritabanýna kaydet
+                            var rowCount = worksheet.Dimension.Rows;
+                            var processedRows = 0;
+                            var dataRowsToAdd = new List<ExcelDataRow>();
+                            
+                            for (int row = 2; row <= rowCount; row++)
+                            {
+                                var rowData = new Dictionary<string, string>();
+                                bool hasData = false;
+
+                                for (int col = 1; col <= headers.Count; col++)
+                                {
+                                    var cellValue = worksheet.Cells[row, col].Value;
+                                    var stringValue = cellValue?.ToString()?.Trim() ?? "";
+                                    rowData[headers[col - 1]] = stringValue;
+                                    
+                                    if (!string.IsNullOrWhiteSpace(stringValue))
+                                        hasData = true;
+                                }
+
+                                // Sadece veri içeren satýrlarý kaydet
+                                if (hasData)
+                                {
+                                    var dataRow = new ExcelDataRow
+                                    {
+                                        FileName = fileName,
+                                        SheetName = worksheet.Name,
+                                        RowIndex = row,
+                                        RowData = JsonSerializer.Serialize(rowData),
+                                        CreatedDate = DateTime.UtcNow,
+                                        Version = 1,
+                                        IsDeleted = false
+                                    };
+
+                                    dataRowsToAdd.Add(dataRow);
+                                    processedRows++;
+
+                                    sheetResults.Add(new ExcelDataResponseDto
+                                    {
+                                        Id = 0, // Database'e kaydedildikten sonra güncellenir
+                                        FileName = fileName,
+                                        SheetName = worksheet.Name,
+                                        RowIndex = row,
+                                        Data = rowData,
+                                        CreatedDate = dataRow.CreatedDate,
+                                        Version = dataRow.Version
+                                    });
+                                }
+                            }
+
+                            // Bu sheet için batch insert
+                            if (dataRowsToAdd.Any())
+                            {
+                                _context.ExcelDataRows.AddRange(dataRowsToAdd);
+                                await _context.SaveChangesAsync();
+                                _logger.LogInformation("Sheet {SheetName} için veriler veritabanýna kaydedildi: {ProcessedRows} satýr", 
+                                    worksheet.Name, processedRows);
+                            }
+
+                            allResults[worksheet.Name] = sheetResults;
+                        }
+
+                        // Transaction'ý commit et
+                        await transaction.CommitAsync();
+
+                        _logger.LogInformation("Tüm sheet'ler baþarýyla iþlendi: {FileName}, toplam {SheetCount} sheet", 
+                            fileName, allResults.Count);
+                        
+                        return allResults;
+                    }
+                    catch (Exception)
+                    {
+                        await transaction.RollbackAsync();
+                        throw;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Tüm sheet'ler okunurken hata: {FileName}", fileName);
+                    throw;
+                }
+            });
+        }
+
         public async Task<List<ExcelDataResponseDto>> ReadExcelDataAsync(string fileName, string? sheetName = null)
         {
-            try
+            return await ExecuteWithRetryAsync(async () =>
             {
-                var excelFile = await _context.ExcelFiles.FirstOrDefaultAsync(f => f.FileName == fileName && f.IsActive);
-                if (excelFile == null)
-                    throw new FileNotFoundException($"Dosya bulunamadý: {fileName}");
-
-                // Önceki verileri temizle (yeniden okuma durumunda)
-                var existingData = await _context.ExcelDataRows
-                    .Where(r => r.FileName == fileName)
-                    .ToListAsync();
-                
-                if (existingData.Any())
+                try
                 {
-                    _context.ExcelDataRows.RemoveRange(existingData);
-                    await _context.SaveChangesAsync();
-                    _logger.LogInformation("Önceki veriler temizlendi: {FileName}", fileName);
-                }
+                    // URL decode iþlemi - dosya adý encode edilmiþ olabilir
+                    fileName = Uri.UnescapeDataString(fileName);
+                    
+                    _logger.LogInformation("ReadExcelDataAsync baþlatýldý: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
 
-                var results = new List<ExcelDataResponseDto>();
-
-                using var package = new ExcelPackage(new FileInfo(excelFile.FilePath));
-                var worksheet = sheetName != null ? package.Workbook.Worksheets[sheetName] : package.Workbook.Worksheets.FirstOrDefault();
-                
-                if (worksheet == null)
-                    throw new Exception($"Sheet bulunamadý: {sheetName ?? "Ýlk sheet"}");
-
-                // Worksheet boþ mu kontrol et
-                if (worksheet.Dimension == null)
-                {
-                    _logger.LogWarning("Worksheet boþ: {SheetName}", worksheet.Name);
-                    return results;
-                }
-
-                // Header'larý al
-                var headers = new List<string>();
-                var columnCount = worksheet.Dimension.Columns;
-                for (int col = 1; col <= columnCount; col++)
-                {
-                    headers.Add(worksheet.Cells[1, col].Value?.ToString() ?? $"Column{col}");
-                }
-
-                // Verileri oku ve veritabanýna kaydet
-                var rowCount = worksheet.Dimension.Rows;
-                for (int row = 2; row <= rowCount; row++)
-                {
-                    var rowData = new Dictionary<string, string>();
-                    bool hasData = false;
-
-                    for (int col = 1; col <= headers.Count; col++)
+                    // Eðer özel bir sheet belirtilmemiþse, tüm sheet'leri oku
+                    if (string.IsNullOrEmpty(sheetName))
                     {
-                        var cellValue = worksheet.Cells[row, col].Value;
-                        var stringValue = cellValue?.ToString() ?? "";
-                        rowData[headers[col - 1]] = stringValue;
+                        _logger.LogInformation("Sheet belirtilmemiþ, tüm sheet'ler okunacak: {FileName}", fileName);
+                        var allSheetsData = await ReadAllSheetsFromExcelAsync(fileName);
                         
-                        if (!string.IsNullOrWhiteSpace(stringValue))
-                            hasData = true;
+                        // Tüm sheet'lerin verilerini tek listede birleþtir
+                        var combinedResults = new List<ExcelDataResponseDto>();
+                        foreach (var sheetData in allSheetsData.Values)
+                        {
+                            combinedResults.AddRange(sheetData);
+                        }
+                        
+                        _logger.LogInformation("Tüm sheet'ler okundu: {FileName}, toplam {Count} kayýt", fileName, combinedResults.Count);
+                        return combinedResults;
                     }
 
-                    // Sadece veri içeren satýrlarý kaydet
-                    if (hasData)
+                    // Belirli bir sheet için okuma yap
+                    var excelFile = await _context.ExcelFiles.FirstOrDefaultAsync(f => f.FileName == fileName && f.IsActive);
+                    if (excelFile == null)
                     {
-                        var dataRow = new ExcelDataRow
-                        {
-                            FileName = fileName,
-                            SheetName = worksheet.Name,
-                            RowIndex = row,
-                            RowData = JsonSerializer.Serialize(rowData),
-                            CreatedDate = DateTime.UtcNow,
-                            Version = 1
-                        };
+                        _logger.LogError("Dosya bulunamadý: {FileName}", fileName);
+                        throw new FileNotFoundException($"Dosya bulunamadý: {fileName}");
+                    }
 
-                        _context.ExcelDataRows.Add(dataRow);
+                    // Fiziksel dosyanýn varlýðýný kontrol et
+                    if (!System.IO.File.Exists(excelFile.FilePath))
+                    {
+                        _logger.LogError("Fiziksel dosya bulunamadý: {FilePath}", excelFile.FilePath);
+                        throw new FileNotFoundException($"Fiziksel dosya bulunamadý: {excelFile.FilePath}");
+                    }
 
-                        results.Add(new ExcelDataResponseDto
+                    var results = new List<ExcelDataResponseDto>();
+
+                    using var package = new ExcelPackage(new FileInfo(excelFile.FilePath));
+                    
+                    // Sheet'i bul
+                    var worksheet = package.Workbook.Worksheets[sheetName];
+                    if (worksheet == null)
+                    {
+                        // Mevcut sheet'leri logla
+                        var availableSheets = package.Workbook.Worksheets.Select(ws => ws.Name).ToList();
+                        _logger.LogError("Sheet bulunamadý: {SheetName}. Mevcut sheet'ler: {AvailableSheets}", 
+                            sheetName, string.Join(", ", availableSheets));
+                        throw new Exception($"Sheet '{sheetName}' bulunamadý. Mevcut sheet'ler: {string.Join(", ", availableSheets)}");
+                    }
+
+                    // Worksheet boþ mu kontrol et
+                    if (worksheet.Dimension == null)
+                    {
+                        _logger.LogWarning("Worksheet boþ: {SheetName}", worksheet.Name);
+                        return results;
+                    }
+
+                    // Concurrency sorunlarýný önlemek için transaction kullan
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    
+                    try
+                    {
+                        // Sadece belirtilen sheet için verileri temizle
+                        var existingDataCount = await _context.ExcelDataRows
+                            .Where(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted)
+                            .CountAsync();
+                        
+                        if (existingDataCount > 0)
                         {
-                            Id = 0, // Database'e kaydedildikten sonra güncellenir
-                            FileName = fileName,
-                            SheetName = worksheet.Name,
-                            RowIndex = row,
-                            Data = rowData,
-                            CreatedDate = dataRow.CreatedDate,
-                            Version = dataRow.Version
-                        });
+                            // Soft delete yaklaþýmý kullan - fiziksel silme yerine
+                            var existingData = await _context.ExcelDataRows
+                                .Where(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted)
+                                .ToListAsync();
+                            
+                            foreach (var row in existingData)
+                            {
+                                row.IsDeleted = true;
+                                row.ModifiedDate = DateTime.UtcNow;
+                                row.ModifiedBy = "SYSTEM_READ_OPERATION";
+                            }
+                            
+                            await _context.SaveChangesAsync();
+                            _logger.LogInformation("Önceki veriler soft delete yapýldý: {FileName}/{SheetName} - {Count} kayýt", 
+                                fileName, sheetName, existingDataCount);
+                        }
+
+                        // Header'larý al
+                        var headers = new List<string>();
+                        var columnCount = worksheet.Dimension.Columns;
+                        for (int col = 1; col <= columnCount; col++)
+                        {
+                            var headerValue = worksheet.Cells[1, col].Value?.ToString()?.Trim();
+                            headers.Add(!string.IsNullOrEmpty(headerValue) ? headerValue : $"Column{col}");
+                        }
+
+                        _logger.LogInformation("Header'lar okundu: {Headers}", string.Join(", ", headers));
+
+                        // Verileri oku ve veritabanýna kaydet
+                        var rowCount = worksheet.Dimension.Rows;
+                        var processedRows = 0;
+                        var dataRowsToAdd = new List<ExcelDataRow>();
+                        
+                        for (int row = 2; row <= rowCount; row++)
+                        {
+                            var rowData = new Dictionary<string, string>();
+                            bool hasData = false;
+
+                            for (int col = 1; col <= headers.Count; col++)
+                            {
+                                var cellValue = worksheet.Cells[row, col].Value;
+                                var stringValue = cellValue?.ToString()?.Trim() ?? "";
+                                rowData[headers[col - 1]] = stringValue;
+                                
+                                if (!string.IsNullOrWhiteSpace(stringValue))
+                                    hasData = true;
+                            }
+
+                            // Sadece veri içeren satýrlarý kaydet
+                            if (hasData)
+                            {
+                                var dataRow = new ExcelDataRow
+                                {
+                                    FileName = fileName,
+                                    SheetName = worksheet.Name,
+                                    RowIndex = row,
+                                    RowData = JsonSerializer.Serialize(rowData),
+                                    CreatedDate = DateTime.UtcNow,
+                                    Version = 1,
+                                    IsDeleted = false
+                                };
+
+                                dataRowsToAdd.Add(dataRow);
+                                processedRows++;
+
+                                results.Add(new ExcelDataResponseDto
+                                {
+                                    Id = 0, // Database'e kaydedildikten sonra güncellenir
+                                    FileName = fileName,
+                                    SheetName = worksheet.Name,
+                                    RowIndex = row,
+                                    Data = rowData,
+                                    CreatedDate = dataRow.CreatedDate,
+                                    Version = dataRow.Version
+                                });
+                            }
+                        }
+
+                        // Batch insert for better performance
+                        if (dataRowsToAdd.Any())
+                        {
+                            _context.ExcelDataRows.AddRange(dataRowsToAdd);
+                            await _context.SaveChangesAsync();
+                            _logger.LogInformation("Veriler veritabanýna kaydedildi: {ProcessedRows} satýr", processedRows);
+                        }
+
+                        // Transaction'ý commit et
+                        await transaction.CommitAsync();
+
+                        // ID'leri güncelle
+                        var savedRows = await _context.ExcelDataRows
+                            .Where(r => r.FileName == fileName && r.SheetName == worksheet.Name && !r.IsDeleted)
+                            .OrderBy(r => r.RowIndex)
+                            .ToListAsync();
+
+                        for (int i = 0; i < results.Count && i < savedRows.Count; i++)
+                        {
+                            results[i].Id = savedRows[i].Id;
+                        }
+
+                        _logger.LogInformation("Excel verisi baþarýyla okundu: {FileName}, {RowCount} satýr", fileName, results.Count);
+                        return results;
+                    }
+                    catch (Exception)
+                    {
+                        await transaction.RollbackAsync();
+                        throw;
                     }
                 }
-
-                await _context.SaveChangesAsync();
-
-                // ID'leri güncelle
-                var savedRows = await _context.ExcelDataRows
-                    .Where(r => r.FileName == fileName && r.SheetName == worksheet.Name)
-                    .OrderBy(r => r.RowIndex)
-                    .ToListAsync();
-
-                for (int i = 0; i < results.Count && i < savedRows.Count; i++)
+                catch (Exception ex)
                 {
-                    results[i].Id = savedRows[i].Id;
+                    _logger.LogError(ex, "Excel dosyasý okunurken hata: {FileName}, SheetName: {SheetName}", fileName, sheetName);
+                    throw;
                 }
-
-                _logger.LogInformation("Excel verisi baþarýyla okundu: {FileName}, {RowCount} satýr", fileName, results.Count);
-                return results;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Excel dosyasý okunurken hata: {FileName}", fileName);
-                throw;
-            }
+            });
         }
 
         public async Task<List<ExcelDataResponseDto>> GetExcelDataAsync(string fileName, string? sheetName = null, int page = 1, int pageSize = 50)
@@ -282,61 +584,153 @@ namespace ExcelDataManagementAPI.Services
             }
         }
 
-        public async Task<ExcelDataResponseDto> UpdateExcelDataAsync(ExcelDataUpdateDto updateDto)
+        public async Task<ExcelDataResponseDto> UpdateExcelDataAsync(ExcelDataUpdateDto updateDto, HttpContext? httpContext = null)
         {
-            var dataRow = await _context.ExcelDataRows.FindAsync(updateDto.Id);
-            if (dataRow == null)
-                throw new Exception($"Veri bulunamadý: {updateDto.Id}");
-
-            dataRow.RowData = JsonSerializer.Serialize(updateDto.Data);
-            dataRow.ModifiedDate = DateTime.UtcNow;
-            dataRow.ModifiedBy = updateDto.ModifiedBy;
-            dataRow.Version++;
-
-            await _context.SaveChangesAsync();
-
-            return new ExcelDataResponseDto
+            return await ExecuteWithRetryAsync(async () =>
             {
-                Id = dataRow.Id,
-                FileName = dataRow.FileName,
-                SheetName = dataRow.SheetName,
-                RowIndex = dataRow.RowIndex,
-                Data = updateDto.Data,
-                CreatedDate = dataRow.CreatedDate,
-                ModifiedDate = dataRow.ModifiedDate,
-                Version = dataRow.Version,
-                ModifiedBy = dataRow.ModifiedBy
-            };
+                _logger.LogInformation("UpdateExcelDataAsync baþlatýldý: ID={Id}, ModifiedBy={ModifiedBy}", updateDto.Id, updateDto.ModifiedBy);
+
+                var dataRow = await _context.ExcelDataRows.FindAsync(updateDto.Id);
+                if (dataRow == null)
+                {
+                    _logger.LogError("Güncellenecek veri bulunamadý: {Id}", updateDto.Id);
+                    throw new Exception($"Veri bulunamadý: {updateDto.Id}");
+                }
+
+                // Silinen veri kontrolü
+                if (dataRow.IsDeleted)
+                {
+                    _logger.LogError("Silinen veri güncellenmeye çalýþýlýyor: {Id}", updateDto.Id);
+                    throw new Exception($"Bu veri silinmiþ durumda ve güncellenemez: {updateDto.Id}");
+                }
+
+                // Deðiþiklik öncesi veriyi sakla (audit için)
+                var oldData = JsonSerializer.Deserialize<Dictionary<string, string>>(dataRow.RowData);
+                var newData = updateDto.Data;
+
+                // Hangi kolonlarýn deðiþtiðini bul
+                var changedColumns = new List<string>();
+                foreach (var newItem in newData)
+                {
+                    if (oldData?.ContainsKey(newItem.Key) != true || oldData[newItem.Key] != newItem.Value)
+                    {
+                        changedColumns.Add(newItem.Key);
+                    }
+                }
+
+                if (!changedColumns.Any())
+                {
+                    _logger.LogInformation("Hiç deðiþiklik yapýlmamýþ, güncelleme atlanýyor: {Id}", updateDto.Id);
+                    return new ExcelDataResponseDto
+                    {
+                        Id = dataRow.Id,
+                        FileName = dataRow.FileName,
+                        SheetName = dataRow.SheetName,
+                        RowIndex = dataRow.RowIndex,
+                        Data = oldData ?? new Dictionary<string, string>(),
+                        CreatedDate = dataRow.CreatedDate,
+                        ModifiedDate = dataRow.ModifiedDate,
+                        Version = dataRow.Version,
+                        ModifiedBy = dataRow.ModifiedBy
+                    };
+                }
+
+                // Güncelleme iþlemi
+                var oldVersion = dataRow.Version;
+                dataRow.RowData = JsonSerializer.Serialize(updateDto.Data);
+                dataRow.ModifiedDate = DateTime.UtcNow;
+                dataRow.ModifiedBy = updateDto.ModifiedBy;
+                dataRow.Version++;
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Veri güncellendi: ID={Id}, Version {OldVersion} -> {NewVersion}, ChangedColumns={ChangedColumns}", 
+                    updateDto.Id, oldVersion, dataRow.Version, string.Join(", ", changedColumns));
+
+                // Audit log kaydet
+                try
+                {
+                    await _auditService.LogChangeAsync(
+                        fileName: dataRow.FileName,
+                        sheetName: dataRow.SheetName,
+                        rowIndex: dataRow.RowIndex,
+                        originalRowId: dataRow.Id,
+                        operationType: "UPDATE",
+                        oldValue: oldData,
+                        newValue: newData,
+                        modifiedBy: updateDto.ModifiedBy,
+                        httpContext: httpContext,
+                        changeReason: "Web sitesi üzerinden veri güncellemesi",
+                        changedColumns: changedColumns.ToArray()
+                    );
+                }
+                catch (Exception auditEx)
+                {
+                    _logger.LogError(auditEx, "Audit log kaydedilemedi, ancak veri güncelleme baþarýlý: {Id}", updateDto.Id);
+                    // Audit hatasý güncelleme iþlemini durdurmasýn
+                }
+
+                return new ExcelDataResponseDto
+                {
+                    Id = dataRow.Id,
+                    FileName = dataRow.FileName,
+                    SheetName = dataRow.SheetName,
+                    RowIndex = dataRow.RowIndex,
+                    Data = updateDto.Data,
+                    CreatedDate = dataRow.CreatedDate,
+                    ModifiedDate = dataRow.ModifiedDate,
+                    Version = dataRow.Version,
+                    ModifiedBy = dataRow.ModifiedBy
+                };
+            });
         }
 
-        public async Task<List<ExcelDataResponseDto>> BulkUpdateExcelDataAsync(BulkUpdateDto bulkUpdateDto)
+        public async Task<List<ExcelDataResponseDto>> BulkUpdateExcelDataAsync(BulkUpdateDto bulkUpdateDto, HttpContext? httpContext = null)
         {
             var results = new List<ExcelDataResponseDto>();
 
             foreach (var update in bulkUpdateDto.Updates)
             {
-                var result = await UpdateExcelDataAsync(update);
+                var result = await UpdateExcelDataAsync(update, httpContext);
                 results.Add(result);
             }
 
             return results;
         }
 
-        public async Task<bool> DeleteExcelDataAsync(int id, string? deletedBy = null)
+        public async Task<bool> DeleteExcelDataAsync(int id, string? deletedBy = null, HttpContext? httpContext = null)
         {
             var dataRow = await _context.ExcelDataRows.FindAsync(id);
             if (dataRow == null)
                 return false;
+
+            // Silme öncesi veriyi sakla (audit için)
+            var oldData = JsonSerializer.Deserialize<Dictionary<string, string>>(dataRow.RowData);
 
             dataRow.IsDeleted = true;
             dataRow.ModifiedDate = DateTime.UtcNow;
             dataRow.ModifiedBy = deletedBy;
 
             await _context.SaveChangesAsync();
+
+            // Audit log kaydet
+            await _auditService.LogChangeAsync(
+                fileName: dataRow.FileName,
+                sheetName: dataRow.SheetName,
+                rowIndex: dataRow.RowIndex,
+                originalRowId: dataRow.Id,
+                operationType: "DELETE",
+                oldValue: oldData,
+                newValue: null,
+                modifiedBy: deletedBy,
+                httpContext: httpContext,
+                changeReason: "Web sitesi üzerinden veri silme"
+            );
+
             return true;
         }
 
-        public async Task<bool> DeleteExcelFileAsync(string fileName, string? deletedBy = null)
+        public async Task<bool> DeleteExcelFileAsync(string fileName, string? deletedBy = null, HttpContext? httpContext = null)
         {
             try
             {
@@ -379,37 +773,110 @@ namespace ExcelDataManagementAPI.Services
             }
         }
 
-        public async Task<ExcelDataResponseDto> AddExcelRowAsync(string fileName, string sheetName, Dictionary<string, string> rowData, string? addedBy = null)
+        public async Task<ExcelDataResponseDto> AddExcelRowAsync(string fileName, string sheetName, Dictionary<string, string> rowData, string? addedBy = null, HttpContext? httpContext = null)
         {
-            var maxRowIndex = await _context.ExcelDataRows
-                .Where(r => r.FileName == fileName && r.SheetName == sheetName)
-                .MaxAsync(r => (int?)r.RowIndex) ?? 0;
-
-            var dataRow = new ExcelDataRow
+            try
             {
-                FileName = fileName,
-                SheetName = sheetName,
-                RowIndex = maxRowIndex + 1,
-                RowData = JsonSerializer.Serialize(rowData),
-                CreatedDate = DateTime.UtcNow,
-                ModifiedBy = addedBy,
-                Version = 1
-            };
+                _logger.LogInformation("AddExcelRowAsync baþlatýldý: FileName={FileName}, SheetName={SheetName}, AddedBy={AddedBy}", 
+                    fileName, sheetName, addedBy);
 
-            _context.ExcelDataRows.Add(dataRow);
-            await _context.SaveChangesAsync();
+                // Dosyanýn var olup olmadýðýný kontrol et
+                var fileExists = await _context.ExcelFiles
+                    .AnyAsync(f => f.FileName == fileName && f.IsActive);
 
-            return new ExcelDataResponseDto
+                if (!fileExists)
+                {
+                    _logger.LogError("Dosya bulunamadý: {FileName}", fileName);
+                    throw new FileNotFoundException($"Dosya bulunamadý: {fileName}");
+                }
+
+                // Sheet'in var olup olmadýðýný kontrol et
+                var sheetExists = await _context.ExcelDataRows
+                    .AnyAsync(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted);
+
+                if (!sheetExists)
+                {
+                    // Mevcut sheet'leri bul
+                    var availableSheets = await _context.ExcelDataRows
+                        .Where(r => r.FileName == fileName && !r.IsDeleted)
+                        .Select(r => r.SheetName)
+                        .Distinct()
+                        .ToListAsync();
+
+                    _logger.LogWarning("Sheet bulunamadý: {SheetName}. Mevcut sheet'ler: {AvailableSheets}", 
+                        sheetName, string.Join(", ", availableSheets));
+                    
+                    // Eðer hiç sheet yoksa, dosya okunmamýþ demektir
+                    if (!availableSheets.Any())
+                    {
+                        throw new InvalidOperationException($"Dosya '{fileName}' henüz okunmamýþ. Önce dosyayý okuyun.");
+                    }
+                    
+                    throw new ArgumentException($"Sheet '{sheetName}' bulunamadý. Mevcut sheet'ler: {string.Join(", ", availableSheets)}");
+                }
+
+                // Maksimum satýr index'ini bul
+                var maxRowIndex = await _context.ExcelDataRows
+                    .Where(r => r.FileName == fileName && r.SheetName == sheetName && !r.IsDeleted)
+                    .MaxAsync(r => (int?)r.RowIndex) ?? 1; // En az 2'den baþla (1 header için)
+
+                var newRowIndex = maxRowIndex + 1;
+
+                var dataRow = new ExcelDataRow
+                {
+                    FileName = fileName,
+                    SheetName = sheetName,
+                    RowIndex = newRowIndex,
+                    RowData = JsonSerializer.Serialize(rowData),
+                    CreatedDate = DateTime.UtcNow,
+                    ModifiedBy = addedBy,
+                    Version = 1
+                };
+
+                _context.ExcelDataRows.Add(dataRow);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Yeni satýr veritabanýna eklendi: ID={Id}, RowIndex={RowIndex}", dataRow.Id, newRowIndex);
+
+                // Audit log kaydet
+                try
+                {
+                    await _auditService.LogChangeAsync(
+                        fileName: fileName,
+                        sheetName: sheetName,
+                        rowIndex: dataRow.RowIndex,
+                        originalRowId: dataRow.Id,
+                        operationType: "CREATE",
+                        oldValue: null,
+                        newValue: rowData,
+                        modifiedBy: addedBy,
+                        httpContext: httpContext,
+                        changeReason: "Web sitesi üzerinden yeni veri ekleme"
+                    );
+                }
+                catch (Exception auditEx)
+                {
+                    _logger.LogError(auditEx, "Audit log kaydedilemedi, ancak veri ekleme baþarýlý");
+                    // Audit hatasý veri ekleme iþlemini durdurmasýn
+                }
+
+                return new ExcelDataResponseDto
+                {
+                    Id = dataRow.Id,
+                    FileName = fileName,
+                    SheetName = sheetName,
+                    RowIndex = dataRow.RowIndex,
+                    Data = rowData,
+                    CreatedDate = dataRow.CreatedDate,
+                    Version = dataRow.Version,
+                    ModifiedBy = addedBy
+                };
+            }
+            catch (Exception ex)
             {
-                Id = dataRow.Id,
-                FileName = fileName,
-                SheetName = sheetName,
-                RowIndex = dataRow.RowIndex,
-                Data = rowData,
-                CreatedDate = dataRow.CreatedDate,
-                Version = dataRow.Version,
-                ModifiedBy = addedBy
-            };
+                _logger.LogError(ex, "AddExcelRowAsync'te hata: FileName={FileName}, SheetName={SheetName}", fileName, sheetName);
+                throw;
+            }
         }
 
         public async Task<byte[]> ExportToExcelAsync(ExcelExportRequestDto exportRequest)

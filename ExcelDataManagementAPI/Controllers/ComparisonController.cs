@@ -91,6 +91,7 @@ namespace ExcelDataManagementAPI.Controllers
                     data = result,
                     file1 = new { name = uploadedFile1.FileName, original = uploadedFile1.OriginalFileName },
                     file2 = new { name = uploadedFile2.FileName, original = uploadedFile2.OriginalFileName },
+                   
                     message = "Ýki Excel dosyasý baþarýyla karþýlaþtýrýldý"
                 });
             }

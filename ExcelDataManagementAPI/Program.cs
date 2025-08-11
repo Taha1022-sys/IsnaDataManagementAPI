@@ -39,6 +39,10 @@ namespace ExcelDataManagementAPI
             // Dependency Injection
             builder.Services.AddScoped<IExcelService, ExcelService>();
             builder.Services.AddScoped<IDataComparisonService, DataComparisonService>();
+            builder.Services.AddScoped<IAuditService, AuditService>(); // Audit service eklendi 
+
+            // HTTP Context accessor - IP ve User Agent bilgileri için
+            builder.Services.AddHttpContextAccessor();  
 
             // Dosya upload konfigürasyonu
             builder.Services.Configure<IISServerOptions>(options =>
@@ -98,21 +102,65 @@ namespace ExcelDataManagementAPI
             // Static files
             app.UseStaticFiles();
 
-            // Middleware sırası - CORS'u Authorization'dan önce kullan
+            // Middleware sırası - CORS'u Authorization'dan önce kullan     
             app.UseAuthorization();
             app.MapControllers();
 
-            // Veritabanı kontrolü
+            // Veritabanı migration kontrolü
             try
             {
                 using var scope = app.Services.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<ExcelDataContext>();
-                await context.Database.EnsureCreatedAsync();
-                Console.WriteLine("✅ Veritabanı hazır!");
+                
+                // Migration'ları kontrol et ve uygula
+                var pendingMigrations = await context.Database.GetPendingMigrationsAsync();
+                if (pendingMigrations.Any())
+                {
+                    Console.WriteLine("🔄 Bekleyen migration'lar uygulanıyor...");
+                    foreach (var migration in pendingMigrations)
+                    {
+                        Console.WriteLine($"   - {migration}");
+                    }
+                    await context.Database.MigrateAsync();
+                    Console.WriteLine("✅ Migration'lar başarıyla uygulandı!");
+                }
+                else
+                {
+                    Console.WriteLine("✅ Veritabanı güncel - migration gerekmiyor!");
+                }
+                
+                // Veritabanı bağlantısını test et
+                var canConnect = await context.Database.CanConnectAsync();
+                if (canConnect)
+                {
+                    Console.WriteLine("✅ Veritabanı bağlantısı başarılı!");
+                    
+                    // Audit tablosunun oluşup oluşmadığını kontrol et
+                    var auditTableExists = await context.Database
+                        .SqlQueryRaw<int>("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'GerceklesenRaporlarKopya'")
+                        .FirstOrDefaultAsync();
+                    
+                    if (auditTableExists > 0)
+                    {
+                        Console.WriteLine("✅ GerceklesenRaporlarKopya audit tablosu hazır!");
+                    }
+                    else
+                    {
+                        Console.WriteLine("⚠️  GerceklesenRaporlarKopya tablosu bulunamadı - migration gerekebilir");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("❌ Veritabanı bağlantısı başarısız!");
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Veritabanı hatası: {ex.Message}");
+                Console.WriteLine("💡 Lütfen migration komutlarını manuel olarak çalıştırın:");
+                Console.WriteLine("   1. cd ExcelDataManagementAPI");
+                Console.WriteLine("   2. dotnet ef migrations add AddAuditTable");
+                Console.WriteLine("   3. dotnet ef database update");
             }
 
             Console.WriteLine("🚀 Excel Data Management API başlatıldı!");
@@ -122,6 +170,7 @@ namespace ExcelDataManagementAPI
             Console.WriteLine("🔒 HTTPS API Base URL: https://localhost:7002/api");
             Console.WriteLine("🌐 Frontend URL: http://localhost:5174");
             Console.WriteLine("✅ CORS yapılandırması aktif - Frontend bağlantısı hazır!");
+            Console.WriteLine("📊 Audit System aktif - Tüm değişiklikler GerceklesenRaporlarKopya tablosunda!");
             Console.WriteLine("💡 LaunchSettings.json'daki portlar kullanılıyor");
 
             app.Run();
